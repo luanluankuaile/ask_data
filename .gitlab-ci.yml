@@ -1,3 +1,61 @@
+# GitLab CI pipeline for students-project-13
+# - Lint / build (Python) jobs
+# - Docker build and push job (uses Docker-in-Docker)
+# Configure these CI/CD variables in your project settings:
+# - CI_REGISTRY_USER, CI_REGISTRY_PASSWORD (for docker login) OR use GitLab's built-in CI registry variables
+# - IMAGE_REPOSITORY (optional) to override image destination
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  IMAGE_REPOSITORY: "${IMAGE_REPOSITORY:-epmgptsemanticsearch.azurecr.io/students-project-13}"
+  IMAGE_TAG: "${CI_COMMIT_SHORT_SHA}"
+  IMAGE_NAME: "$IMAGE_REPOSITORY:$IMAGE_TAG"
+
+stages:
+  - lint
+  - build
+  - docker
+
+lint-python:
+  image: python:3.11-slim
+  stage: lint
+  script:
+    - pip install --no-cache-dir -r requirements.txt || true
+    - echo "No configured linter - add ruff/flake8 if desired"
+  only:
+    - branches
+
+build-python:
+  image: python:3.11-slim
+  stage: build
+  script:
+    - pip install --no-cache-dir -r requirements.txt
+    - if [ -f pytest.ini ] || [ -d tests ]; then pytest -q; else echo "No tests found"; fi
+  artifacts:
+    paths:
+      - .cache/pip
+    expire_in: 1h
+  only:
+    - branches
+
+docker-build-and-push:
+  image: docker:24
+  services:
+    - docker:dind
+  stage: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - echo "Logging into registry..."
+    # Prefer using CI-provided variables (CI_REGISTRY, CI_REGISTRY_USER, CI_REGISTRY_PASSWORD)
+    - if [ -n "$CI_REGISTRY" ]; then REGISTRY="$CI_REGISTRY"; else REGISTRY="${IMAGE_REPOSITORY%%/*}"; fi
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$REGISTRY"
+  script:
+    - docker build -t "$IMAGE_NAME" .
+    - docker push "$IMAGE_NAME"
+  only:
+    - main
 ---
 variables:
   DOCKER_IMAGE_NAME: "students-project-13"
