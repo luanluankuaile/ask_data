@@ -22,30 +22,6 @@ build:
     - docker push $CI_REGISTRY_IMAGE:latest
   only:
     - main
-  tags:
-    - docker
-
-# Uncomment and configure if you need Helm deployment
-# deploy:
-#   stage: deploy
-#   image: alpine/helm:latest
-#   before_script:
-#     - apk add --no-cache curl kubectl
-#     - helm version
-#     # Configure kubectl if needed
-#     # - kubectl config set-cluster ...
-#   script:
-#     - |
-#       HELM_EXTRA_ARGS="--values ./helm/vars.yml \
-#         --set secrets.DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY} \
-#         --set resources.limits.cpu=1 \
-#         --set resources.limits.memory=2Gi \
-#         --set resources.requests.cpu=0.2 \
-#         --set resources.requests.memory=1Gi"
-#       helm upgrade --install $DOCKER_IMAGE_NAME ./helm $HELM_EXTRA_ARGS \
-#         --set app.image.tag=$DOCKER_IMAGE_TAG \
-#         --namespace ${CI_PROJECT_NAME} \
-#         --create-namespace
-#   only:
-#     - main
-#   when: on_success
+  # Remove tags to use any available runner, or specify the correct tag for your runner
+  # tags:
+  #   - docker
