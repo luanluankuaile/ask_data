@@ -1,15 +1,20 @@
+import os
 import tempfile
 import textwrap
 
 import streamlit as st
+import torch
 from dotenv import load_dotenv
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import Chroma
-from langchain_openai import AzureChatOpenAI
-from langchain_openai.embeddings import AzureOpenAIEmbeddings
+from langchain_openai import ChatOpenAI
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
+# Disable ChromaDB telemetry to avoid errors
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 # Load environment variables
 load_dotenv()
@@ -34,7 +39,14 @@ def main():
         documents = loader.load_and_split()
         text_splitter = CharacterTextSplitter(chunk_size=1200, chunk_overlap=25)
         docs = text_splitter.split_documents(documents)
-        embeddings = AzureOpenAIEmbeddings()
+        # Use HuggingFace embeddings (free, no API key needed)
+        # Specify device to avoid meta tensor issues
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            model_kwargs={"device": device},
+            encode_kwargs={"normalize_embeddings": True}
+        )
         vector_store = Chroma.from_documents(docs, embeddings)
         template = textwrap.dedent(
             """
@@ -57,7 +69,19 @@ add details beyond the scope of the question.
             input_variables=["context", "question"], template=template
         )
 
-        llm = AzureChatOpenAI(azure_deployment="gpt-4-0613", temperature=0.5)
+        # Configure DeepSeek API
+        deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "")
+        if not deepseek_api_key:
+            st.error("⚠️ DEEPSEEK_API_KEY is not set. Please set it in your .env file or environment variables.")
+            st.info("Get your API key from: https://platform.deepseek.com/")
+            st.stop()
+        
+        llm = ChatOpenAI(
+            model="deepseek-chat",
+            openai_api_base="https://api.deepseek.com",
+            openai_api_key=deepseek_api_key,
+            temperature=0.5
+        )
 
         retriever = vector_store.as_retriever()
 

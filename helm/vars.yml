@@ -5,8 +5,11 @@ app:
     pullPolicy: Always
   port: 8501
   env:
-    - name: OPENAI_API_VERSION
-      value: "2023-12-01-preview"
+    - name: DEEPSEEK_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: deepseek-secrets
+          key: DEEPSEEK_API_KEY
 
 hostname_override: students-project-13.azure.epm-gpt.projects.epam.com
 
