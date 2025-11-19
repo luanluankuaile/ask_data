@@ -1,0 +1,21 @@
+app:
+  image:
+    repository: epmgptsemanticsearch.azurecr.io/students-project-13
+    tag: latest
+    pullPolicy: Always
+  port: 8501
+  env:
+    - name: OPENAI_API_VERSION
+      value: "2023-12-01-preview"
+
+hostname_override: students-project-13.azure.epm-gpt.projects.epam.com
+
+ingress:
+  enabled: true
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "1200"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "1200"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "1200"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "Content-Security-Policy: default-src * data:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval';";

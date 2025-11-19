@@ -1,0 +1,21 @@
+---
+variables:
+  HELM_EXTRA_ARGS: "--values ./helm/vars.yml
+  --set secrets.AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+  --set secrets.AZURE_OPENAI_ENDPOINT=https://ai-proxy.lab.epam.com
+  --set resources.limits.cpu=1
+  --set resources.limits.memory=2Gi 
+  --set resources.requests.cpu=0.2
+  --set resources.requests.memory=1Gi"
+
+
+include:
+  - project: "epm-gpt/common/common-ci-templates"
+    ref: "main"
+    file:
+      - "pipelines/cicd/docker_helm.yml"
+
+dev_deploy:
+  when: on_success
+  only:
+    - main
