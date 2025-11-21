@@ -47,7 +47,14 @@ if USE_SQLITE_FALLBACK:
         count = res.fetchone()[0]
 
 
+# Azure OpenAI Configuration
 AZURE_KEY = os.environ.get("AZURE_OPENAI_API_KEY")
+AZURE_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2025-04-01-preview")
+AZURE_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", os.environ.get("AZURE_OPENAI_API_ENDPOINT", ""))
+DEFAULT_MODEL = os.environ.get("MODEL", "gpt-4o")
+
+# Database helpers
+IS_SQLITE = DATABASE_URI.startswith("sqlite")
 
 
 def _call_llm_with_fallback(client, messages, model=None, tools=None, tool_choice=None):
@@ -94,12 +101,7 @@ def _call_llm_with_fallback(client, messages, model=None, tools=None, tool_choic
         return _Resp(_Choice(_Msg(text_out)))
 
 # Choose appropriate SQL expression for filtering by year depending on DB dialect
-if DATABASE_URI.startswith("sqlite"):
-    # sqlite fallback stores year as integer in this script; use >= for 2020 inclusive
-    YEAR_FILTER_EXPR = "enroll_date >= 2020"
-else:
-    # For Postgres and most SQL DBs that support EXTRACT
-    YEAR_FILTER_EXPR = "EXTRACT(YEAR FROM enroll_date) >= 2020"
+YEAR_FILTER_EXPR = "enroll_date >= 2020" if IS_SQLITE else "EXTRACT(YEAR FROM enroll_date) >= 2020"
 
 
 def execute_sql(sql: str, params: dict | None = None):
@@ -119,6 +121,48 @@ def execute_sql(sql: str, params: dict | None = None):
     return list(cols), rows
 
 
+# --- Helper functions ---
+def _add_year_filter(clauses: list, params: dict, year: int, param_name: str, operator: str = ">="):
+    """Add year filter clause based on database type."""
+    if IS_SQLITE:
+        clauses.append(f"enroll_date {operator} :{param_name}")
+    else:
+        clauses.append(f"EXTRACT(YEAR FROM enroll_date) {operator} :{param_name}")
+    params[param_name] = year
+
+def _check_column_exists(conn, column_name: str, table_name: str = 'students') -> bool:
+    """Check if a column exists in the table."""
+    if IS_SQLITE:
+        return False  # Skip check for sqlite
+    try:
+        col_res = [r[0] for r in conn.execute(
+            text("SELECT column_name FROM information_schema.columns WHERE table_name = :t;"),
+            {"t": table_name}
+        ).fetchall()]
+        return column_name in col_res
+    except Exception:
+        return False
+
+def _get_table_schema_description(table_name: str) -> str:
+    """Get table schema as formatted string."""
+    schema = []
+    try:
+        engine = create_engine(DATABASE_URI)
+        with engine.connect() as conn:
+            if IS_SQLITE:
+                res = conn.execute(text(f"PRAGMA table_info('{table_name}');")).fetchall()
+                schema = [(r[1], r[2]) for r in res]
+            else:
+                res = conn.execute(
+                    text("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :t;"),
+                    {"t": table_name}
+                ).fetchall()
+                schema = [(r[0], r[1]) for r in res]
+    except Exception:
+        pass
+    
+    return '\n'.join([f"- {c}: {t}" for c, t in schema]) if schema else "(schema unavailable)"
+
 # --- Function-tool integration: define query functions that the LLM can call ---
 def count_students(enroll_after_year: int = None, enroll_before_year: int = None, is_active: bool = None):
     """Function tool: Count students matching the criteria.
@@ -135,42 +179,23 @@ def count_students(enroll_after_year: int = None, enroll_before_year: int = None
     """
     engine = create_engine(DATABASE_URI)
     with engine.connect() as conn:
-        # Build WHERE clauses safely
         clauses = []
         params = {}
         
         if enroll_after_year is not None:
-            if DATABASE_URI.startswith("sqlite"):
-                clauses.append("enroll_date >= :year_after")
-                params["year_after"] = enroll_after_year
-            else:
-                clauses.append("EXTRACT(YEAR FROM enroll_date) >= :year_after")
-                params["year_after"] = enroll_after_year
+            _add_year_filter(clauses, params, enroll_after_year, "year_after", ">=")
         
         if enroll_before_year is not None:
-            if DATABASE_URI.startswith("sqlite"):
-                clauses.append("enroll_date < :year_before")
-                params["year_before"] = enroll_before_year
-            else:
-                clauses.append("EXTRACT(YEAR FROM enroll_date) < :year_before")
-                params["year_before"] = enroll_before_year
+            _add_year_filter(clauses, params, enroll_before_year, "year_before", "<")
 
-        if is_active is not None:
-            # add filter only if column exists - check columns
-            if DATABASE_URI.startswith("sqlite"):
-                # sqlite doesn't have information_schema, skip this check
-                pass
-            else:
-                col_res = [r[0] for r in conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='students';")).fetchall()]
-                if 'is_active' in col_res:
-                    clauses.append("is_active = :is_active")
-                    params['is_active'] = is_active
+        if is_active is not None and _check_column_exists(conn, 'is_active'):
+            clauses.append("is_active = :is_active")
+            params['is_active'] = is_active
 
         where_clause = " AND ".join(clauses) if clauses else "1=1"
         sql = text(f"SELECT COUNT(*) as count FROM students WHERE {where_clause};")
         result = conn.execute(sql, params).fetchone()
-        count = result[0]
-        return json.dumps({"count": count}, ensure_ascii=False)
+        return json.dumps({"count": result[0]}, ensure_ascii=False)
 
 
 def query_students(enroll_after_year: int = None, is_active: bool = None, limit: int = 100):
@@ -188,41 +213,27 @@ def query_students(enroll_after_year: int = None, is_active: bool = None, limit:
     """
     engine = create_engine(DATABASE_URI)
     with engine.connect() as conn:
-        # Build WHERE clauses safely
         clauses = []
         params = {}
+        
         if enroll_after_year is not None:
-            if DATABASE_URI.startswith("sqlite"):
-                clauses.append("enroll_date >= :year")
-                params["year"] = enroll_after_year
-            else:
-                clauses.append("EXTRACT(YEAR FROM enroll_date) >= :year")
-                params["year"] = enroll_after_year
+            _add_year_filter(clauses, params, enroll_after_year, "year", ">=")
 
-        if is_active is not None:
-            # add filter only if column exists - check columns
-            if DATABASE_URI.startswith("sqlite"):
-                # sqlite doesn't have information_schema, skip this check
-                pass
-            else:
-                col_res = [r[0] for r in conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='students';")).fetchall()]
-                if 'is_active' in col_res:
-                    clauses.append("is_active = :is_active")
-                    params['is_active'] = is_active
+        if is_active is not None and _check_column_exists(conn, 'is_active'):
+            clauses.append("is_active = :is_active")
+            params['is_active'] = is_active
 
         where_clause = " AND ".join(clauses) if clauses else "1=1"
         sql = text(f"SELECT id, name, enroll_date FROM students WHERE {where_clause} ORDER BY enroll_date LIMIT :limit;")
         params['limit'] = limit
         rows = conn.execute(sql, params).fetchall()
-        result = []
-        for r in rows:
-            # convert row to dict
-            row_dict = {
-                'id': r[0],
-                'name': r[1],
-                'enroll_date': r[2].isoformat() if getattr(r[2], 'isoformat', None) else r[2]
-            }
-            result.append(row_dict)
+        
+        result = [{
+            'id': r[0],
+            'name': r[1],
+            'enroll_date': r[2].isoformat() if hasattr(r[2], 'isoformat') else r[2]
+        } for r in rows]
+        
         return json.dumps(result, ensure_ascii=False)
 
 
@@ -245,18 +256,16 @@ def run_function_tool_flow(prompt: str, model: str | None = None):
     if not AZURE_KEY:
         raise RuntimeError("AZURE_OPENAI_API_KEY is not set; cannot run LLM function-tool flow")
 
-    # prepare client class
+    # Prepare client
     try:
-        from openai import AzureOpenAI as OpenAIAzureClient
+        from openai import AzureOpenAI as OpenAIClient
     except Exception:
-        OpenAIAzureClient = None
+        OpenAIClient = AzureOpenAI
 
-    client_cls = OpenAIAzureClient if OpenAIAzureClient is not None else AzureOpenAI
-
-    client = client_cls(
+    client = OpenAIClient(
         api_key=AZURE_KEY,
-        api_version=os.environ.get("OPENAI_API_VERSION", "2025-04-01-preview"),
-        azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", os.environ.get("AZURE_OPENAI_API_ENDPOINT", "")),
+        api_version=AZURE_API_VERSION,
+        azure_endpoint=AZURE_ENDPOINT,
     )
 
     tools = [
@@ -294,23 +303,8 @@ def run_function_tool_flow(prompt: str, model: str | None = None):
         }
     ]
 
-    # schema-aware system prompt
-    students_schema = []
-    try:
-        engine = create_engine(DATABASE_URI)
-        with engine.connect() as conn:
-            if DATABASE_URI.startswith("sqlite"):
-                res = conn.execute(text("PRAGMA table_info('students');")).fetchall()
-                for r in res:
-                    students_schema.append((r[1], r[2]))
-            else:
-                res = conn.execute(text("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :t;"), {"t": 'students'}).fetchall()
-                for r in res:
-                    students_schema.append((r[0], r[1]))
-    except Exception:
-        pass
-
-    schema_lines = '\n'.join([f"- {c}: {t}" for c, t in students_schema]) if students_schema else "(schema unavailable)"
+    # Get table schema
+    schema_lines = _get_table_schema_description('students')
 
     system = (
         "You are a SQL-aware assistant with access to a students database via function tools. "
@@ -326,7 +320,7 @@ def run_function_tool_flow(prompt: str, model: str | None = None):
         {"role": "user", "content": prompt}
     ]
 
-    model = model or os.environ.get("MODEL", "gpt-4o")
+    model = model or DEFAULT_MODEL
 
     # first call
     response = _call_llm_with_fallback(client, messages, model=model, tools=tools, tool_choice="auto")
@@ -412,7 +406,7 @@ def _simple_fallback_nl_to_sql(prompt: str) -> tuple[str, dict]:
     if year_match and re.search(r"enroll|enrolled|enrollment|入学", p):
         year = int(year_match.group(1))
         # If DB is sqlite, use date-range string comparison which works for 'YYYY-MM-DD'
-        if DATABASE_URI.startswith("sqlite"):
+        if IS_SQLITE:
             start = f"{year}-01-01"
             end = f"{year+1}-01-01"
             if re.search(r"after|>=|on or after|on or after|onwards", p):
@@ -443,27 +437,7 @@ def generate_sql_from_prompt(prompt: str, dialect: str = "postgresql") -> tuple[
     # If we have an Azure key, try LLM generation
     if AZURE_KEY:
         try:
-            # Introspect the students table schema to give the model concrete context
-            def get_table_schema(table_name: str):
-                engine = create_engine(DATABASE_URI)
-                cols = []
-                try:
-                    with engine.connect() as conn:
-                        if DATABASE_URI.startswith("sqlite"):
-                            res = conn.execute(text(f"PRAGMA table_info('{table_name}');")).fetchall()
-                            # PRAGMA returns (cid, name, type, notnull, dflt_value, pk)
-                            for r in res:
-                                cols.append((r[1], r[2]))
-                        else:
-                            res = conn.execute(text("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :t;"), {"t": table_name}).fetchall()
-                            for r in res:
-                                cols.append((r[0], r[1]))
-                except Exception:
-                    pass
-                return cols
-
-            students_schema = get_table_schema('students')
-            schema_lines = '\n'.join([f"- {c}: {t}" for c, t in students_schema]) if students_schema else "(schema unavailable)"
+            schema_lines = _get_table_schema_description('students')
 
             # construct a deterministic system prompt guiding the model and include schema
             system = (
@@ -477,11 +451,12 @@ def generate_sql_from_prompt(prompt: str, dialect: str = "postgresql") -> tuple[
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt}
             ]
-            model = os.environ.get("MODEL", "gpt-4o")
-            llm_client = AzureOpenAI(api_key=AZURE_KEY,
-                                    api_version=os.environ.get("OPENAI_API_VERSION", "2025-04-01-preview"),
-                                    azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", os.environ.get("AZURE_OPENAI_API_ENDPOINT", "")))
-            resp = _call_llm_with_fallback(llm_client, messages, model=model)
+            llm_client = AzureOpenAI(
+                api_key=AZURE_KEY,
+                api_version=AZURE_API_VERSION,
+                azure_endpoint=AZURE_ENDPOINT
+            )
+            resp = _call_llm_with_fallback(llm_client, messages, model=DEFAULT_MODEL)
             sql_text = resp.choices[0].message.content.strip()
         except Exception as e:
             raise RuntimeError(f"LLM generation failed: {e}")
@@ -505,19 +480,15 @@ def generate_sql_from_prompt(prompt: str, dialect: str = "postgresql") -> tuple[
     return sql_clean, {}
 
 
-def _cli_generate_and_print(prompt: str):
-    try:
-        sql, params = generate_sql_from_prompt(prompt)
-        print("Generated SQL:\n", sql)
-        if params:
-            print("Parameters:", params)
-    except Exception as e:
-        print("Failed to generate SQL:", e)
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--nl', help='Natural language prompt to generate SQL for')
     args = parser.parse_args()
     if args.nl:
-        _cli_generate_and_print(args.nl)
+        try:
+            sql, params = generate_sql_from_prompt(args.nl)
+            print("Generated SQL:\n", sql)
+            if params:
+                print("Parameters:", params)
+        except Exception as e:
+            print("Failed to generate SQL:", e)
