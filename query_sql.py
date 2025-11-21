@@ -164,83 +164,111 @@ def query_students(enroll_after_year: int = 2020, is_active: bool = None, limit:
         return json.dumps(result, ensure_ascii=False)
 
 
-# If an AZURE key is present, expose the function as a tool and let the model call it
-if AZURE_KEY:
+def run_function_tool_flow(prompt: str, model: str | None = None):
+    """Run a function-tool LLM flow for `query_students` and return the final assistant text and tool output.
+
+    Returns a tuple: (assistant_text: str, tool_response_json: str|None)
+    - If the model calls the `query_students` function, this will execute it and include the function output.
+    - If the model does not call the function, tool_response_json will be None and assistant_text contains the assistant reply.
+    """
+    if not AZURE_KEY:
+        raise RuntimeError("AZURE_OPENAI_API_KEY is not set; cannot run LLM function-tool flow")
+
+    # prepare client class
     try:
-        # prefer the OpenAI style Azure client if available
-        try:
-            from openai import AzureOpenAI as OpenAIAzureClient
-        except Exception:
-            OpenAIAzureClient = None
+        from openai import AzureOpenAI as OpenAIAzureClient
+    except Exception:
+        OpenAIAzureClient = None
 
-        client_cls = OpenAIAzureClient if OpenAIAzureClient is not None else AzureOpenAI
+    client_cls = OpenAIAzureClient if OpenAIAzureClient is not None else AzureOpenAI
 
-        client = client_cls(
-            api_key=AZURE_KEY,
-            api_version=os.environ.get("OPENAI_API_VERSION", "2025-04-01-preview"),
-            azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", os.environ.get("AZURE_OPENAI_API_ENDPOINT", "")),
-        )
+    client = client_cls(
+        api_key=AZURE_KEY,
+        api_version=os.environ.get("OPENAI_API_VERSION", "2025-04-01-preview"),
+        azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", os.environ.get("AZURE_OPENAI_API_ENDPOINT", "")),
+    )
 
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "query_students",
-                    "description": "Query students from the students table and return JSON list of rows",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "enroll_after_year": {"type": "integer", "description": "Include students enrolled in or after this year"},
-                            "is_active": {"type": ["boolean", "null"], "description": "Filter by active status if provided"},
-                            "limit": {"type": "integer", "description": "Maximum number of rows to return"}
-                        },
-                        "required": ["enroll_after_year"]
-                    }
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "query_students",
+                "description": "Query students from the students table and return JSON list of rows",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "enroll_after_year": {"type": "integer"},
+                        "is_active": {"type": ["boolean", "null"]},
+                        "limit": {"type": "integer"}
+                    },
+                    "required": ["enroll_after_year"]
                 }
             }
-        ]
+        }
+    ]
 
-        # sample messages: ask the model to fetch students in or after 2020
-        messages = [
-            {"role": "system", "content": "You are a helpful assistant with access to a students database via a function tool."},
-            {"role": "user", "content": "请返回2020年及以后的学生信息，返回 JSON 列表"}
-        ]
+    # schema-aware system prompt
+    students_schema = []
+    try:
+        engine = create_engine(DATABASE_URI)
+        with engine.connect() as conn:
+            if DATABASE_URI.startswith("sqlite"):
+                res = conn.execute(text("PRAGMA table_info('students');")).fetchall()
+                for r in res:
+                    students_schema.append((r[1], r[2]))
+            else:
+                res = conn.execute(text("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :t;"), {"t": 'students'}).fetchall()
+                for r in res:
+                    students_schema.append((r[0], r[1]))
+    except Exception:
+        pass
 
-        model = os.environ.get("MODEL", "gpt-4o")
-        response = _call_llm_with_fallback(client, messages, model=model, tools=tools, tool_choice="auto")
+    schema_lines = '\n'.join([f"- {c}: {t}" for c, t in students_schema]) if students_schema else "(schema unavailable)"
 
-        response_message = response.choices[0].message
-        # If the model called our function, execute the function and append tool result
-        tool_calls = getattr(response_message, 'tool_calls', None)
-        if tool_calls:
-            for tool_call in tool_calls:
-                if tool_call.function.name == 'query_students':
-                    function_args = json.loads(tool_call.function.arguments)
-                    enroll_after_year = function_args.get('enroll_after_year', 2020)
-                    is_active = function_args.get('is_active', None)
-                    limit = function_args.get('limit', 100)
-                    function_response = query_students(enroll_after_year=enroll_after_year, is_active=is_active, limit=limit)
-                    # append tool response
-                    messages.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": "query_students",
-                        "content": function_response
-                    })
+    system = (
+        "You are a SQL-aware assistant with access to a students database via a function tool. "
+        "Available table schema:\n" + schema_lines + "\n"
+        "When appropriate you may call the function tool `query_students` to fetch rows."
+    )
 
-            # final call to model with tool output
-            final_response = _call_llm_with_fallback(client, messages, model=model, tools=tools)
-            print("Final assistant response:\n", final_response.choices[0].message.content)
-        else:
-            print("Model did not call the function. Assistant reply:\n", response_message.content)
-    except Exception as e:
-        print("Function-tool flow failed:", e)
-else:
-    # No AZURE key: do not call LLM or functions at import time. When this
-    # module is imported (for example by `main.py`), avoid side-effects such
-    # as executing DB queries. Consumers can call `query_students` or the
-    # CLI entrypoint below to run queries interactively.
-    print("No AZURE_OPENAI_API_KEY set — LLM function-tool disabled (no import-time calls).")
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt}
+    ]
+
+    model = model or os.environ.get("MODEL", "gpt-4o")
+
+    # first call
+    response = _call_llm_with_fallback(client, messages, model=model, tools=tools, tool_choice="auto")
+    response_message = response.choices[0].message
+
+    tool_calls = getattr(response_message, 'tool_calls', None)
+    if not tool_calls:
+        # no function call; return assistant reply
+        return response_message.content, None
+
+    # execute tool calls
+    function_response = None
+    for tool_call in tool_calls:
+        if getattr(tool_call, 'function', None) and tool_call.function.name == 'query_students':
+            function_args = json.loads(tool_call.function.arguments)
+            enroll_after_year = function_args.get('enroll_after_year', 2020)
+            is_active = function_args.get('is_active', None)
+            limit = function_args.get('limit', 100)
+            function_response = query_students(enroll_after_year=enroll_after_year, is_active=is_active, limit=limit)
+            # append tool output and continue
+            messages.append({
+                "tool_call_id": getattr(tool_call, 'id', None),
+                "role": "tool",
+                "name": "query_students",
+                "content": function_response
+            })
+
+    # final assistant call with tool outputs
+    final_response = _call_llm_with_fallback(client, messages, model=model, tools=tools)
+    final_text = final_response.choices[0].message.content
+    # return final assistant text and the raw tool output (function_response)
+    return final_text, function_response
 
 
 def _simple_fallback_nl_to_sql(prompt: str) -> tuple[str, dict]:

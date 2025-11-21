@@ -1,6 +1,7 @@
 import streamlit as st
 import os
-from query_sql import generate_sql_from_prompt, execute_sql, DATABASE_URI
+import json
+from query_sql import generate_sql_from_prompt, execute_sql, DATABASE_URI, run_function_tool_flow
 
 st.set_page_config(page_title="NL→SQL (students)", layout="wide")
 st.title("Ask your `students` table (NL → SQL)")
@@ -15,12 +16,27 @@ col1, col2 = st.columns([2, 1])
 with col1:
     if st.button("Generate SQL"):
         try:
-            sql, params = generate_sql_from_prompt(prompt)
-            st.code(sql, language="sql")
-            if params:
-                st.write("Parameters:", params)
-            st.session_state['last_sql'] = sql
-            st.session_state['last_params'] = params
+            # If an Azure key is configured use the LLM function-tool flow and show assistant output
+            if os.environ.get('AZURE_OPENAI_API_KEY'):
+                assistant_text, tool_output = run_function_tool_flow(prompt)
+                st.subheader("Assistant response")
+                st.write(assistant_text)
+                if tool_output:
+                    st.subheader("Tool output (raw)")
+                    try:
+                        st.json(json.loads(tool_output))
+                    except Exception:
+                        st.text(tool_output)
+                # store for reference
+                st.session_state['last_assistant'] = assistant_text
+                st.session_state['last_tool_output'] = tool_output
+            else:
+                sql, params = generate_sql_from_prompt(prompt)
+                st.code(sql, language="sql")
+                if params:
+                    st.write("Parameters:", params)
+                st.session_state['last_sql'] = sql
+                st.session_state['last_params'] = params
         except Exception as e:
             st.error(f"Failed to generate SQL: {e}")
 

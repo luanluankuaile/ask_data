@@ -10,6 +10,7 @@ Create a `.env` file in the project root with your DeepSeek API key:
 AZURE_OPENAI_API_KEY="********************"
 AZURE_OPENAI_ENDPOINT=https://ai-proxy.lab.epam.com
 OPENAI_API_VERSION=2025-04-01-preview
+DATABASE_URI=postgresql://postgres:admin@localhost:5432/mydb
 
 # students-project-13
 
