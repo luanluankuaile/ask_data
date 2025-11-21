@@ -1,10 +1,10 @@
 import streamlit as st
 import os
 import json
-from query_sql import generate_sql_from_prompt, execute_sql, DATABASE_URI, run_function_tool_flow
+from query_sql import run_function_tool_flow, generate_sql_from_prompt, execute_sql, DATABASE_URI
 
 st.set_page_config(page_title="NL→SQL (students)", layout="wide")
-st.title("Ask your `students` table (NL → SQL)")
+st.title("Ask your `students` table")
 
 st.write(f"Using `DATABASE_URI`: `{DATABASE_URI}`")
 
@@ -14,74 +14,57 @@ prompt = st.text_input("Enter a question about the `students` table", key='nl_pr
 
 col1, col2 = st.columns([2, 1])
 with col1:
-    if st.button("Generate SQL"):
+    if st.button("Generate and Query"):
         try:
-            # If an Azure key is configured use the LLM function-tool flow and show assistant output
+            # Main workflow: main.py receives prompt → run_function_tool_flow (uses function_tool + NL generation) → display results
             if os.environ.get('AZURE_OPENAI_API_KEY'):
+                # Use LLM function-tool flow: calls query_students function and generates natural language response
                 assistant_text, tool_output = run_function_tool_flow(prompt)
-                st.subheader("Assistant response")
+                
+                st.subheader("🤖 AI Assistant Response")
                 st.write(assistant_text)
+                
                 if tool_output:
-                    st.subheader("Tool output (raw)")
+                    st.subheader("📊 Query Results (from function tool)")
                     try:
-                        st.json(json.loads(tool_output))
+                        data = json.loads(tool_output)
+                        # Display as table for both list and dict
+                        if isinstance(data, list) and len(data) > 0:
+                            import pandas as pd
+                            df = pd.DataFrame(data)
+                            st.dataframe(df)
+                        elif isinstance(data, dict):
+                            # For count or other dict results, show as table too
+                            import pandas as pd
+                            df = pd.DataFrame([data])
+                            st.dataframe(df)
+                        else:
+                            st.json(data)
                     except Exception:
                         st.text(tool_output)
-                # store for reference
+                
+                # Store for reference
                 st.session_state['last_assistant'] = assistant_text
                 st.session_state['last_tool_output'] = tool_output
-                # Try to extract a SQL SELECT statement from the assistant reply so the Execute flow can use it.
-                def _extract_sql_from_text(text: str) -> str | None:
-                    import re
-                    if not text:
-                        return None
-                    # look for a SELECT ...; block (greedy until first semicolon)
-                    m = re.search(r"(?is)(select\b.+?;)", text)
-                    if m:
-                        return m.group(1).strip().rstrip(';')
-                    # fallback: if text starts with SELECT, take the first paragraph
-                    m2 = re.search(r"(?is)^(select\b.+)$", text.strip())
-                    if m2:
-                        return m2.group(1).strip().rstrip(';')
-                    return None
-
-                extracted_sql = _extract_sql_from_text(assistant_text)
-                if extracted_sql:
-                    st.session_state['last_sql'] = extracted_sql
-                    st.session_state['last_params'] = {}
-                    st.info("Extracted SQL from assistant reply and stored to run (see 'Run SQL').")
-                else:
-                    # provide a manual action to copy assistant text into last_sql if desired
-                    if st.button("Use assistant text as SQL"):
-                        st.session_state['last_sql'] = assistant_text
-                        st.session_state['last_params'] = {}
-                        st.success("Assistant text saved to 'last_sql'. You can now Run SQL.")
             else:
+                # Fallback: use simple SQL generation without function tools
                 sql, params = generate_sql_from_prompt(prompt)
+                st.subheader("📝 Generated SQL")
                 st.code(sql, language="sql")
                 if params:
                     st.write("Parameters:", params)
-                st.session_state['last_sql'] = sql
-                st.session_state['last_params'] = params
-        except Exception as e:
-            st.error(f"Failed to generate SQL: {e}")
-
-    execute = st.checkbox("Execute generated SQL", value=False)
-    if execute:
-        if st.button("Run SQL"):
-            sql_to_run = st.session_state.get('last_sql')
-            if not sql_to_run:
-                st.warning("No generated SQL found. Click 'Generate SQL' first.")
-            else:
+                
+                # Execute the SQL directly and show results
                 try:
-                    params = st.session_state.get('last_params') or {}
-                    cols, rows = execute_sql(sql_to_run, params)
+                    cols, rows = execute_sql(sql, params)
                     import pandas as pd
                     df = pd.DataFrame(rows, columns=cols)
                     st.success(f"Query returned {len(df)} rows")
                     st.dataframe(df)
                 except Exception as e:
                     st.error(f"Failed to execute SQL: {e}")
+        except Exception as e:
+            st.error(f"Failed to process query: {e}")
 
 with col2:
     st.header("Quick prompts")

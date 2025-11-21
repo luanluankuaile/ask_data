@@ -119,34 +119,96 @@ def execute_sql(sql: str, params: dict | None = None):
     return list(cols), rows
 
 
-# --- Function-tool integration: define a query function that the LLM can call ---
-def query_students(enroll_after_year: int = 2020, is_active: bool = None, limit: int = 100):
-    """Query students from the configured database and return a JSON array of rows.
+# --- Function-tool integration: define query functions that the LLM can call ---
+def count_students(enroll_after_year: int = None, enroll_before_year: int = None, is_active: bool = None):
+    """Function tool: Count students matching the criteria.
+    
+    This function is exposed as a tool to the LLM for COUNT queries.
+    Use this when the user asks "how many", "count", "total number", etc.
 
     Parameters:
-      - enroll_after_year: include students enrolled in or after this year
+      - enroll_after_year: optional - count students enrolled in or after this year
+      - enroll_before_year: optional - count students enrolled before this year
       - is_active: optional boolean to filter active students (if column exists)
-      - limit: maximum number of rows to return
-    Returns: JSON string of list of student objects
+      
+    Returns: JSON string with count result
     """
     engine = create_engine(DATABASE_URI)
     with engine.connect() as conn:
         # Build WHERE clauses safely
         clauses = []
         params = {}
-        if DATABASE_URI.startswith("sqlite"):
-            clauses.append("enroll_date >= :year")
-            params["year"] = enroll_after_year
-        else:
-            clauses.append("EXTRACT(YEAR FROM enroll_date) >= :year")
-            params["year"] = enroll_after_year
+        
+        if enroll_after_year is not None:
+            if DATABASE_URI.startswith("sqlite"):
+                clauses.append("enroll_date >= :year_after")
+                params["year_after"] = enroll_after_year
+            else:
+                clauses.append("EXTRACT(YEAR FROM enroll_date) >= :year_after")
+                params["year_after"] = enroll_after_year
+        
+        if enroll_before_year is not None:
+            if DATABASE_URI.startswith("sqlite"):
+                clauses.append("enroll_date < :year_before")
+                params["year_before"] = enroll_before_year
+            else:
+                clauses.append("EXTRACT(YEAR FROM enroll_date) < :year_before")
+                params["year_before"] = enroll_before_year
 
         if is_active is not None:
             # add filter only if column exists - check columns
-            col_res = [r[0] for r in conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='students';")).fetchall()]
-            if 'is_active' in col_res:
-                clauses.append("is_active = :is_active")
-                params['is_active'] = is_active
+            if DATABASE_URI.startswith("sqlite"):
+                # sqlite doesn't have information_schema, skip this check
+                pass
+            else:
+                col_res = [r[0] for r in conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='students';")).fetchall()]
+                if 'is_active' in col_res:
+                    clauses.append("is_active = :is_active")
+                    params['is_active'] = is_active
+
+        where_clause = " AND ".join(clauses) if clauses else "1=1"
+        sql = text(f"SELECT COUNT(*) as count FROM students WHERE {where_clause};")
+        result = conn.execute(sql, params).fetchone()
+        count = result[0]
+        return json.dumps({"count": count}, ensure_ascii=False)
+
+
+def query_students(enroll_after_year: int = None, is_active: bool = None, limit: int = 100):
+    """Function tool: Query students from the database and return JSON results.
+    
+    This function is exposed as a tool to the LLM for LIST queries.
+    Use this when the user asks to "list", "show", "get details", etc.
+
+    Parameters:
+      - enroll_after_year: optional - include students enrolled in or after this year
+      - is_active: optional boolean to filter active students (if column exists)
+      - limit: maximum number of rows to return
+      
+    Returns: JSON string of list of student objects (consumed by LLM to generate natural language response)
+    """
+    engine = create_engine(DATABASE_URI)
+    with engine.connect() as conn:
+        # Build WHERE clauses safely
+        clauses = []
+        params = {}
+        if enroll_after_year is not None:
+            if DATABASE_URI.startswith("sqlite"):
+                clauses.append("enroll_date >= :year")
+                params["year"] = enroll_after_year
+            else:
+                clauses.append("EXTRACT(YEAR FROM enroll_date) >= :year")
+                params["year"] = enroll_after_year
+
+        if is_active is not None:
+            # add filter only if column exists - check columns
+            if DATABASE_URI.startswith("sqlite"):
+                # sqlite doesn't have information_schema, skip this check
+                pass
+            else:
+                col_res = [r[0] for r in conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='students';")).fetchall()]
+                if 'is_active' in col_res:
+                    clauses.append("is_active = :is_active")
+                    params['is_active'] = is_active
 
         where_clause = " AND ".join(clauses) if clauses else "1=1"
         sql = text(f"SELECT id, name, enroll_date FROM students WHERE {where_clause} ORDER BY enroll_date LIMIT :limit;")
@@ -165,11 +227,20 @@ def query_students(enroll_after_year: int = 2020, is_active: bool = None, limit:
 
 
 def run_function_tool_flow(prompt: str, model: str | None = None):
-    """Run a function-tool LLM flow for `query_students` and return the final assistant text and tool output.
+    """Main workflow function: accepts NL prompt, uses function tool + NL generation to produce results.
+    
+    This is the core method called by main.py's Streamlit interface.
+    
+    Flow:
+    1. Receives natural language prompt from main.py
+    2. Uses LLM with function calling capability to invoke query_students
+    3. query_students executes SQL query and returns JSON data
+    4. LLM generates natural language response based on query results
+    5. Returns (assistant_text, tool_output) to main.py for display
 
     Returns a tuple: (assistant_text: str, tool_response_json: str|None)
-    - If the model calls the `query_students` function, this will execute it and include the function output.
-    - If the model does not call the function, tool_response_json will be None and assistant_text contains the assistant reply.
+    - assistant_text: Natural language response explaining the results
+    - tool_response_json: Raw JSON output from query_students function (or None if no function called)
     """
     if not AZURE_KEY:
         raise RuntimeError("AZURE_OPENAI_API_KEY is not set; cannot run LLM function-tool flow")
@@ -192,16 +263,32 @@ def run_function_tool_flow(prompt: str, model: str | None = None):
         {
             "type": "function",
             "function": {
-                "name": "query_students",
-                "description": "Query students from the students table and return JSON list of rows",
+                "name": "count_students",
+                "description": "Count the number of students matching the criteria. Use this for 'how many', 'count', 'total number' queries.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "enroll_after_year": {"type": "integer"},
-                        "is_active": {"type": ["boolean", "null"]},
-                        "limit": {"type": "integer"}
+                        "enroll_after_year": {"type": "integer", "description": "Filter students enrolled in or after this year"},
+                        "enroll_before_year": {"type": "integer", "description": "Filter students enrolled before this year"},
+                        "is_active": {"type": ["boolean", "null"], "description": "Filter by active status if column exists"}
                     },
-                    "required": ["enroll_after_year"]
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_students",
+                "description": "Query and list students from the students table. Use this for 'list', 'show', 'get details' queries.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "enroll_after_year": {"type": "integer", "description": "Filter students enrolled in or after this year"},
+                        "is_active": {"type": ["boolean", "null"], "description": "Filter by active status if column exists"},
+                        "limit": {"type": "integer", "description": "Maximum number of rows to return", "default": 100}
+                    },
+                    "required": []
                 }
             }
         }
@@ -226,9 +313,12 @@ def run_function_tool_flow(prompt: str, model: str | None = None):
     schema_lines = '\n'.join([f"- {c}: {t}" for c, t in students_schema]) if students_schema else "(schema unavailable)"
 
     system = (
-        "You are a SQL-aware assistant with access to a students database via a function tool. "
+        "You are a SQL-aware assistant with access to a students database via function tools. "
         "Available table schema:\n" + schema_lines + "\n"
-        "When appropriate you may call the function tool `query_students` to fetch rows."
+        "You have two function tools available:\n"
+        "1. count_students: Use when user asks 'how many', 'count', 'total number' - returns just the count\n"
+        "2. query_students: Use when user asks to 'list', 'show', 'get details' - returns student records\n"
+        "Choose the appropriate function tool based on what the user is asking for."
     )
 
     messages = [
@@ -247,18 +337,49 @@ def run_function_tool_flow(prompt: str, model: str | None = None):
         # no function call; return assistant reply
         return response_message.content, None
 
+    # Append the assistant message with tool_calls first (required by OpenAI API)
+    messages.append({
+        "role": "assistant",
+        "content": response_message.content,
+        "tool_calls": [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments
+                }
+            } for tc in tool_calls
+        ]
+    })
+
     # execute tool calls
     function_response = None
     for tool_call in tool_calls:
-        if getattr(tool_call, 'function', None) and tool_call.function.name == 'query_students':
-            function_args = json.loads(tool_call.function.arguments)
-            enroll_after_year = function_args.get('enroll_after_year', 2020)
+        func_obj = getattr(tool_call, 'function', None)
+        if not func_obj:
+            continue
+            
+        function_args = json.loads(func_obj.arguments)
+        
+        if func_obj.name == 'count_students':
+            enroll_after_year = function_args.get('enroll_after_year', None)
+            enroll_before_year = function_args.get('enroll_before_year', None)
+            is_active = function_args.get('is_active', None)
+            function_response = count_students(enroll_after_year=enroll_after_year, enroll_before_year=enroll_before_year, is_active=is_active)
+            messages.append({
+                "tool_call_id": tool_call.id,
+                "role": "tool",
+                "name": "count_students",
+                "content": function_response
+            })
+        elif func_obj.name == 'query_students':
+            enroll_after_year = function_args.get('enroll_after_year', None)
             is_active = function_args.get('is_active', None)
             limit = function_args.get('limit', 100)
             function_response = query_students(enroll_after_year=enroll_after_year, is_active=is_active, limit=limit)
-            # append tool output and continue
             messages.append({
-                "tool_call_id": getattr(tool_call, 'id', None),
+                "tool_call_id": tool_call.id,
                 "role": "tool",
                 "name": "query_students",
                 "content": function_response

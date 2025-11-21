@@ -1,6 +1,6 @@
 # Example LLM Application
 
-This application uses DeepSeek API for LLM and HuggingFace embeddings for document vectorization.
+This application uses Azure Open AI API for LLM and HuggingFace embeddings for document vectorization.
 
 ## Configuration
 
@@ -54,10 +54,6 @@ pip install -r requirements.txt
 Start the app (headless mode for servers):
 
 ```bash
-export DATABASE_URI="postgresql://postgres:admin@localhost:5432/mydb"
-export ALLOW_SQLITE_FALLBACK=0
-export AZURE_OPENAI_API_KEY=""
-export STREAMLIT_SERVER_HEADLESS=true
 .venv/bin/python -m streamlit run main.py --server.port 8501 --server.headless true
 ```
 
