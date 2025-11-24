@@ -163,6 +163,41 @@ def _get_table_schema_description(table_name: str) -> str:
     
     return '\n'.join([f"- {c}: {t}" for c, t in schema]) if schema else "(schema unavailable)"
 
+def _build_select_query(table: str, columns: list[str] = None, where_clauses: list[str] = None, 
+                       params: dict = None, order_by: str = None, limit: int = None) -> tuple[str, dict]:
+    """Build a SELECT SQL query dynamically.
+    
+    Args:
+        table: Table name
+        columns: List of column names to select (default: all columns)
+        where_clauses: List of WHERE conditions
+        params: Dictionary of parameters for parameterized query
+        order_by: ORDER BY clause (e.g., "enroll_date DESC")
+        limit: LIMIT value
+    
+    Returns:
+        Tuple of (sql_string, params_dict)
+    """
+    params = params or {}
+    
+    # SELECT clause
+    select_cols = ', '.join(columns) if columns else '*'
+    sql_parts = [f"SELECT {select_cols} FROM {table}"]
+    
+    # WHERE clause
+    if where_clauses:
+        sql_parts.append(f"WHERE {' AND '.join(where_clauses)}")
+    
+    # ORDER BY clause
+    if order_by:
+        sql_parts.append(f"ORDER BY {order_by}")
+    
+    # LIMIT clause
+    if limit is not None:
+        sql_parts.append(f"LIMIT {limit}")
+    
+    return ' '.join(sql_parts), params
+
 # --- Function-tool integration: define query functions that the LLM can call ---
 def count_students(enroll_after_year: int = None, enroll_before_year: int = None, is_active: bool = None):
     """Function tool: Count students matching the criteria.
@@ -386,97 +421,99 @@ def run_function_tool_flow(prompt: str, model: str | None = None):
     return final_text, function_response
 
 
-def _simple_fallback_nl_to_sql(prompt: str) -> tuple[str, dict]:
-    """Very small rule-based fallback for common simple prompts.
+def generate_sql_from_prompt(prompt: str, table: str = 'students', dialect: str = "postgresql") -> tuple[str, dict]:
+    """Generate SQL from natural language using LLM text-to-SQL capability.
 
-    This only covers trivial patterns (counts, selects) and is used when no
-    AZURE OpenAI key is configured. Extend as needed.
-    """
-    p = prompt.lower().strip()
-    # Map common words to the `students` table for this project
-    # How many students do you have? -> count
-    if re.search(r"how many .*student|how many students", p):
-        return "SELECT COUNT(1) FROM students", {}
-    # List students -> select *
-    if re.search(r"list .*student|show .*student|list all students|recent students", p):
-        return "SELECT id, name, enroll_date FROM students ORDER BY enroll_date DESC LIMIT 100", {}
+    This function uses Azure OpenAI's LLM to intelligently convert natural language
+    to SQL queries. The LLM understands the table schema and generates appropriate
+    SQL statements.
 
-    # Year-based enrollment questions, e.g. "enrolled in 2022", "enrolled on 2022", "enrolled after 2020"
-    year_match = re.search(r"(?<!\d)(20\d{2}|19\d{2})(?!\d)", p)
-    if year_match and re.search(r"enroll|enrolled|enrollment|入学", p):
-        year = int(year_match.group(1))
-        # If DB is sqlite, use date-range string comparison which works for 'YYYY-MM-DD'
-        if IS_SQLITE:
-            start = f"{year}-01-01"
-            end = f"{year+1}-01-01"
-            if re.search(r"after|>=|on or after|on or after|onwards", p):
-                return ("SELECT COUNT(1) FROM students WHERE enroll_date >= :start", {"start": start})
-            if re.search(r"before|<|until", p):
-                return ("SELECT COUNT(1) FROM students WHERE enroll_date < :start", {"start": start})
-            # default: exact year
-            return ("SELECT COUNT(1) FROM students WHERE enroll_date >= :start AND enroll_date < :end", {"start": start, "end": end})
-        else:
-            # For Postgres and other DBs supporting EXTRACT
-            if re.search(r"after|>=|on or after|on or after|onwards", p):
-                return ("SELECT COUNT(1) FROM students WHERE EXTRACT(YEAR FROM enroll_date) >= :year", {"year": year})
-            if re.search(r"before|<|until", p):
-                return ("SELECT COUNT(1) FROM students WHERE EXTRACT(YEAR FROM enroll_date) < :year", {"year": year})
-            return ("SELECT COUNT(1) FROM students WHERE EXTRACT(YEAR FROM enroll_date) = :year", {"year": year})
-    # fallback: raise so caller can handle
-    raise ValueError("No fallback rule matched the prompt; enable AZURE_OPENAI_API_KEY to generate SQL via LLM.")
+    Args:
+        prompt: Natural language prompt (e.g., "Show me students enrolled after 2020")
+        table: Target table name (default: 'students')
+        dialect: SQL dialect (default: 'postgresql')
 
-
-def generate_sql_from_prompt(prompt: str, dialect: str = "postgresql") -> tuple[str, dict]:
-    """Generate a single read-only SQL statement from a natural language prompt.
-
-    - Uses Azure OpenAI LLM when `AZURE_OPENAI_API_KEY` is set.
-    - Otherwise uses a conservative rule-based fallback for a few simple prompts.
-
+    Returns:
+        Tuple of (sql_string, params_dict)
+        
     The function validates the generated SQL and only allows single SELECT statements.
+    
+    Examples:
+        >>> generate_sql_from_prompt("How many students enrolled in 2023?")
+        ("SELECT COUNT(*) FROM students WHERE ...", {})
+        
+        >>> generate_sql_from_prompt("List top 10 students by enrollment date")
+        ("SELECT * FROM students ORDER BY enroll_date LIMIT 10", {})
     """
-    # If we have an Azure key, try LLM generation
-    if AZURE_KEY:
-        try:
-            schema_lines = _get_table_schema_description('students')
+    if not AZURE_KEY:
+        raise ValueError(
+            "Text-to-SQL requires Azure OpenAI LLM capability. "
+            "Please set AZURE_OPENAI_API_KEY environment variable to enable intelligent natural language to SQL conversion. "
+            f"Prompt received: '{prompt}'"
+        )
+    
+    # Use LLM for intelligent text-to-SQL conversion
+    try:
+        # Get table schema for context
+        schema_lines = _get_table_schema_description(table)
 
-            # construct a deterministic system prompt guiding the model and include schema
-            system = (
-                "You are a SQL generator specialized for a database with a single relevant table `students`. "
-                "Available table schema:\n" + schema_lines + "\n"
-                "Translate the user's natural language request into a single, syntactically valid SQL SELECT statement only. "
-                "Do NOT include any explanatory text or markdown. Return a single SQL statement without trailing semicolon. "
-                "The SQL must be read-only (SELECT). If the request cannot be expressed as a SELECT, respond with the single token: CANNOT_IMPLEMENT."
-            )
-            messages = [
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt}
-            ]
-            llm_client = AzureOpenAI(
-                api_key=AZURE_KEY,
-                api_version=AZURE_API_VERSION,
-                azure_endpoint=AZURE_ENDPOINT
-            )
-            resp = _call_llm_with_fallback(llm_client, messages, model=DEFAULT_MODEL)
-            sql_text = resp.choices[0].message.content.strip()
-        except Exception as e:
-            raise RuntimeError(f"LLM generation failed: {e}")
-    else:
-        # no key: use simple fallback rules
-        sql_text, params = _simple_fallback_nl_to_sql(prompt)
-        return sql_text, params
-    # Basic validation: must be a single SELECT statement
+        # Enhanced system prompt for better text-to-SQL conversion
+        system = (
+            f"You are an expert SQL query generator. Your task is to convert natural language questions into valid SQL queries.\n\n"
+            f"Target Database: {dialect}\n"
+            f"Target Table: `{table}`\n\n"
+            f"Table Schema:\n{schema_lines}\n\n"
+            "Instructions:\n"
+            "1. Generate ONLY a single SELECT SQL statement\n"
+            "2. Use appropriate WHERE, ORDER BY, LIMIT clauses based on the question\n"
+            "3. For date filtering, use appropriate functions for the database dialect\n"
+            f"4. For {dialect}, use EXTRACT(YEAR FROM date_column) for year comparisons\n"
+            "5. Return ONLY the SQL query without explanations, markdown, or semicolons\n"
+            "6. If the question cannot be answered with a SELECT query, respond with: CANNOT_IMPLEMENT\n\n"
+            "Examples:\n"
+            f"Question: 'How many records?' -> SELECT COUNT(*) FROM {table}\n"
+            f"Question: 'Show latest 10' -> SELECT * FROM {table} ORDER BY enroll_date DESC LIMIT 10\n"
+            f"Question: 'Find entries from 2023' -> SELECT * FROM {table} WHERE EXTRACT(YEAR FROM enroll_date) = 2023"
+        )
+        
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Convert this question to SQL: {prompt}"}
+        ]
+        
+        llm_client = AzureOpenAI(
+            api_key=AZURE_KEY,
+            api_version=AZURE_API_VERSION,
+            azure_endpoint=AZURE_ENDPOINT
+        )
+        
+        resp = _call_llm_with_fallback(llm_client, messages, model=DEFAULT_MODEL)
+        sql_text = resp.choices[0].message.content.strip()
+        
+        # Check if LLM couldn't convert
+        if "CANNOT_IMPLEMENT" in sql_text.upper():
+            raise ValueError("The question cannot be converted to a SELECT query")
+            
+    except Exception as e:
+        raise RuntimeError(f"LLM text-to-SQL conversion failed: {e}")
+    
+    # Validate generated SQL
     sql_clean = sql_text.strip().rstrip(";")
     upper = sql_clean.upper()
+    
+    # Security checks
     forbidden = ["INSERT ", "UPDATE ", "DELETE ", "DROP ", "ALTER ", "CREATE ", "TRUNCATE ", "GRANT ", "REVOKE "]
     if any(tok in upper for tok in forbidden):
         raise ValueError("Generated SQL contains forbidden write/DDL operations")
+    
     # Disallow comments or multiple statements
     if ";" in sql_text or "--" in sql_text or "/*" in sql_text:
-        raise ValueError("Generated SQL appears to contain multiple statements or comments; refusing to run")
+        raise ValueError("Generated SQL appears to contain multiple statements or comments")
+    
     if not upper.strip().startswith("SELECT"):
         raise ValueError("Only SELECT queries are allowed")
 
-    # If we reached here from the LLM path, return SQL with empty params dict (no paramization attempted).
+    # Return SQL without parameters (LLM generates inline values)
     return sql_clean, {}
 
 
