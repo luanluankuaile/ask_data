@@ -3,7 +3,7 @@ import os
 import json
 from query_sql import run_function_tool_flow, DATABASE_URI
 
-st.set_page_config(page_title="NL→SQL (students)", layout="wide")
+st.set_page_config(page_title="Text to SQL (students)", layout="wide")
 st.title("Ask your `students` table")
 
 st.write(f"Using `DATABASE_URI`: `{DATABASE_URI}`")
