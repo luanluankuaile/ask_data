@@ -48,7 +48,7 @@ if USE_SQLITE_FALLBACK:
 # Azure OpenAI Configuration
 AZURE_KEY = os.environ.get("AZURE_OPENAI_API_KEY")
 AZURE_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2025-04-01-preview")
-AZURE_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", os.environ.get("AZURE_OPENAI_API_ENDPOINT", ""))
+AZURE_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT","https://ai-proxy.lab.epam.com")
 DEFAULT_MODEL = os.environ.get("MODEL", "gpt-4o")
 
 # Database helpers
@@ -112,8 +112,6 @@ def _call_llm_with_fallback(client, messages, model=None, tools=None, tool_choic
 
         return _Resp(_Choice(_Msg(text_out)))
 
-# Choose appropriate SQL expression for filtering by year depending on DB dialect
-YEAR_FILTER_EXPR = "enroll_date >= 2020" if IS_SQLITE else "EXTRACT(YEAR FROM enroll_date) >= 2020"
 
 
 def execute_sql(sql: str, params: dict | None = None):
