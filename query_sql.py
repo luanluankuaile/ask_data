@@ -56,6 +56,20 @@ DEFAULT_MODEL = os.environ.get("MODEL", "gpt-4o")
 # Database helpers
 IS_SQLITE = DATABASE_URI.startswith("sqlite")
 
+# Create a single shared engine instance
+_engine = None
+
+def get_engine():
+    """Get or create the shared database engine instance.
+    
+    This ensures we reuse the same engine across all database operations
+    instead of creating a new one each time.
+    """
+    global _engine
+    if _engine is None:
+        _engine = create_engine(DATABASE_URI, pool_pre_ping=True)
+    return _engine
+
 
 def _call_llm_with_fallback(client, messages, model=None, tools=None, tool_choice=None):
     """Call an LLM client and tolerate different client APIs.
@@ -109,7 +123,7 @@ def execute_sql(sql: str, params: dict | None = None):
 
     `params` is a dict passed to SQLAlchemy `text()` for safe parameterization.
     """
-    engine = create_engine(DATABASE_URI)
+    engine = get_engine()
     with engine.connect() as conn:
         stmt = text(sql)
         res = conn.execute(stmt, params or {})
@@ -147,7 +161,7 @@ def _get_table_schema_description(table_name: str) -> str:
     """Get table schema as formatted string."""
     schema = []
     try:
-        engine = create_engine(DATABASE_URI)
+        engine = get_engine()
         with engine.connect() as conn:
             if IS_SQLITE:
                 res = conn.execute(text(f"PRAGMA table_info('{table_name}');")).fetchall()
@@ -212,7 +226,7 @@ def count_students(enroll_after_year: int = None, enroll_before_year: int = None
       
     Returns: JSON string with count result
     """
-    engine = create_engine(DATABASE_URI)
+    engine = get_engine()
     with engine.connect() as conn:
         clauses = []
         params = {}
@@ -246,7 +260,7 @@ def query_students(enroll_after_year: int = None, is_active: bool = None, limit:
       
     Returns: JSON string of list of student objects (consumed by LLM to generate natural language response)
     """
-    engine = create_engine(DATABASE_URI)
+    engine = get_engine()
     with engine.connect() as conn:
         clauses = []
         params = {}
@@ -419,113 +433,3 @@ def run_function_tool_flow(prompt: str, model: str | None = None):
     final_text = final_response.choices[0].message.content
     # return final assistant text and the raw tool output (function_response)
     return final_text, function_response
-
-
-def generate_sql_from_prompt(prompt: str, table: str = 'students', dialect: str = "postgresql") -> tuple[str, dict]:
-    """Generate SQL from natural language using LLM text-to-SQL capability.
-
-    This function uses Azure OpenAI's LLM to intelligently convert natural language
-    to SQL queries. The LLM understands the table schema and generates appropriate
-    SQL statements.
-
-    Args:
-        prompt: Natural language prompt (e.g., "Show me students enrolled after 2020")
-        table: Target table name (default: 'students')
-        dialect: SQL dialect (default: 'postgresql')
-
-    Returns:
-        Tuple of (sql_string, params_dict)
-        
-    The function validates the generated SQL and only allows single SELECT statements.
-    
-    Examples:
-        >>> generate_sql_from_prompt("How many students enrolled in 2023?")
-        ("SELECT COUNT(*) FROM students WHERE ...", {})
-        
-        >>> generate_sql_from_prompt("List top 10 students by enrollment date")
-        ("SELECT * FROM students ORDER BY enroll_date LIMIT 10", {})
-    """
-    if not AZURE_KEY:
-        raise ValueError(
-            "Text-to-SQL requires Azure OpenAI LLM capability. "
-            "Please set AZURE_OPENAI_API_KEY environment variable to enable intelligent natural language to SQL conversion. "
-            f"Prompt received: '{prompt}'"
-        )
-    
-    # Use LLM for intelligent text-to-SQL conversion
-    try:
-        # Get table schema for context
-        schema_lines = _get_table_schema_description(table)
-
-        # Enhanced system prompt for better text-to-SQL conversion
-        system = (
-            f"You are an expert SQL query generator. Your task is to convert natural language questions into valid SQL queries.\n\n"
-            f"Target Database: {dialect}\n"
-            f"Target Table: `{table}`\n\n"
-            f"Table Schema:\n{schema_lines}\n\n"
-            "Instructions:\n"
-            "1. Generate ONLY a single SELECT SQL statement\n"
-            "2. Use appropriate WHERE, ORDER BY, LIMIT clauses based on the question\n"
-            "3. For date filtering, use appropriate functions for the database dialect\n"
-            f"4. For {dialect}, use EXTRACT(YEAR FROM date_column) for year comparisons\n"
-            "5. Return ONLY the SQL query without explanations, markdown, or semicolons\n"
-            "6. If the question cannot be answered with a SELECT query, respond with: CANNOT_IMPLEMENT\n\n"
-            "Examples:\n"
-            f"Question: 'How many records?' -> SELECT COUNT(*) FROM {table}\n"
-            f"Question: 'Show latest 10' -> SELECT * FROM {table} ORDER BY enroll_date DESC LIMIT 10\n"
-            f"Question: 'Find entries from 2023' -> SELECT * FROM {table} WHERE EXTRACT(YEAR FROM enroll_date) = 2023"
-        )
-        
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": f"Convert this question to SQL: {prompt}"}
-        ]
-        
-        llm_client = AzureOpenAI(
-            api_key=AZURE_KEY,
-            api_version=AZURE_API_VERSION,
-            azure_endpoint=AZURE_ENDPOINT
-        )
-        
-        resp = _call_llm_with_fallback(llm_client, messages, model=DEFAULT_MODEL)
-        sql_text = resp.choices[0].message.content.strip()
-        
-        # Check if LLM couldn't convert
-        if "CANNOT_IMPLEMENT" in sql_text.upper():
-            raise ValueError("The question cannot be converted to a SELECT query")
-            
-    except Exception as e:
-        raise RuntimeError(f"LLM text-to-SQL conversion failed: {e}")
-    
-    # Validate generated SQL
-    sql_clean = sql_text.strip().rstrip(";")
-    upper = sql_clean.upper()
-    
-    # Security checks
-    forbidden = ["INSERT ", "UPDATE ", "DELETE ", "DROP ", "ALTER ", "CREATE ", "TRUNCATE ", "GRANT ", "REVOKE "]
-    if any(tok in upper for tok in forbidden):
-        raise ValueError("Generated SQL contains forbidden write/DDL operations")
-    
-    # Disallow comments or multiple statements
-    if ";" in sql_text or "--" in sql_text or "/*" in sql_text:
-        raise ValueError("Generated SQL appears to contain multiple statements or comments")
-    
-    if not upper.strip().startswith("SELECT"):
-        raise ValueError("Only SELECT queries are allowed")
-
-    # Return SQL without parameters (LLM generates inline values)
-    return sql_clean, {}
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--nl', help='Natural language prompt to generate SQL for')
-    args = parser.parse_args()
-    if args.nl:
-        try:
-            sql, params = generate_sql_from_prompt(args.nl)
-            print("Generated SQL:\n", sql)
-            if params:
-                print("Parameters:", params)
-        except Exception as e:
-            print("Failed to generate SQL:", e)
