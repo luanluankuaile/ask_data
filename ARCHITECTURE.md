@@ -26,27 +26,32 @@ This is a Natural Language to SQL application that uses Azure OpenAI's LLM with 
 ┌─────────────────────────────────────────────────────────────────┐
 │ 3. run_function_tool_flow: Initialize LLM client               │
 │    - Creates Azure OpenAI client                                │
-│    - Prepares function tool definitions:                        │
-│      • count_students() - for COUNT queries                     │
-│      • query_students() - for LIST queries                      │
-│    - Gets table schema from database                            │
+│    - Query schema_metadata table for ALL tables                 │
+│    - Format metadata with business descriptions                 │
+│    - Prepares function tool definition:                         │
+│      • execute_query() - executes LLM-generated SQL             │
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 4. First LLM Call: Analyze prompt and select function          │
+│ 4. First LLM Call: Analyze prompt and generate SQL             │
 │    Input:                                                        │
-│    - System: "You have count_students and query_students..."   │
+│    - System: Full schema metadata with business descriptions    │
+│      Example: "Table: students                                  │
+│                Business Name: Students Table                    │
+│                Columns: id, name, enroll_date..."               │
 │    - User: "How many students enrolled after 2020?"            │
 │    Output:                                                       │
-│    - LLM decides: call count_students(enroll_after_year=2020)  │
+│    - LLM generates SQL:                                         │
+│      execute_query(sql_query="SELECT COUNT(*) FROM students    │
+│                     WHERE EXTRACT(YEAR FROM enroll_date) >= 2020")│
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 5. Execute Function Tool: count_students(enroll_after_year=2020)│
-│    - Builds SQL: SELECT COUNT(*) FROM students                 │
-│                  WHERE EXTRACT(YEAR FROM enroll_date) >= 2020  │
-│    - Executes query via SQLAlchemy                              │
-│    - Returns: {"count": 42}                                     │
+│ 5. Execute Function Tool: execute_query(sql_query=...)         │
+│    - Security validation: Check SELECT only, no dangerous ops   │
+│    - Execute generated SQL via SQLAlchemy                       │
+│    - Auto-detect query type (COUNT vs LIST)                     │
+│    - Returns: {"count": 42} or [{...}, {...}]                  │
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -78,11 +83,12 @@ This is a Natural Language to SQL application that uses Azure OpenAI's LLM with 
 ```
 User: "List students enrolled after 2020"
     ↓
-LLM selects: query_students(enroll_after_year=2020, limit=100)
+LLM analyzes schema metadata and generates SQL:
+    execute_query(sql_query="SELECT id, name, enroll_date FROM students 
+                             WHERE EXTRACT(YEAR FROM enroll_date) >= 2020 
+                             LIMIT 100")
     ↓
-Executes SQL: SELECT id, name, enroll_date FROM students 
-              WHERE EXTRACT(YEAR FROM enroll_date) >= 2020 
-              ORDER BY enroll_date LIMIT 100
+execute_query() validates and executes SQL
     ↓
 Returns: [{"id": 1, "name": "Alice", "enroll_date": "2021-09-01"}, ...]
     ↓
@@ -143,20 +149,26 @@ Display: Natural language + DataFrame table
 
 1. **Setup Phase**:
    - Creates Azure OpenAI client with credentials
-   - Retrieves table schema from database
-   - Defines function tool specifications (JSON schema)
+   - Calls `get_schema_metadata()` to retrieve ALL table metadata
+   - Calls `format_schema_metadata_for_llm()` to format with business descriptions
+   - Defines function tool specification: `execute_query()` (JSON schema)
 
 2. **First LLM Interaction**:
-   - Sends prompt with system context and available functions
-   - LLM analyzes user intent
-   - LLM selects appropriate function and parameters
-   - Returns `tool_calls` object
+   - Sends prompt with:
+     - System context: "You are a SQL expert assistant..."
+     - Full schema metadata with business names and descriptions
+     - Guidelines for SQL generation
+   - LLM analyzes user intent and schema metadata
+   - LLM generates appropriate SQL SELECT query
+   - Returns `tool_calls` with `sql_query` parameter
 
 3. **Function Execution Phase**:
-   - Parses `tool_calls` to get function name and arguments
-   - Routes to either `count_students()` or `query_students()`
-   - Executes database query
-   - Collects JSON result
+   - Parses `tool_calls` to get SQL query string
+   - Logs generated SQL for debugging: `[Generated SQL] SELECT ...`
+   - Calls `execute_query(user_prompt, sql_query)`
+   - SQL is validated (security checks)
+   - Query is executed via SQLAlchemy
+   - Collects JSON result (auto-detects COUNT vs LIST format)
 
 4. **Second LLM Interaction**:
    - Sends conversation history + tool results back to LLM
@@ -173,44 +185,28 @@ Display: Natural language + DataFrame table
 
 ### 3. **query_sql.py: Function Tools** - Database Access Layer
 
-#### 3a. **count_students()** - COUNT Query Tool
+#### 3a. **execute_query()** - Dynamic SQL Execution Tool
 
-**Purpose**: Returns statistical counts matching criteria
+**Purpose**: Execute LLM-generated SQL queries with security validation
 
 **Parameters**:
-- `enroll_after_year` (int, optional): Filter ≥ year
-- `enroll_before_year` (int, optional): Filter < year  
-- `is_active` (bool, optional): Filter by active status
+- `user_prompt` (str): Original user question for context
+- `sql_query` (str): SQL SELECT query generated by LLM
 
-**SQL Generated**:
-```sql
-SELECT COUNT(*) as count FROM students 
-WHERE EXTRACT(YEAR FROM enroll_date) >= :year
-```
+**Security Features**:
+- Only allows SELECT queries
+- Blocks dangerous keywords: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, REVOKE
+- Prevents SQL injection via single statement enforcement
+- No multiple queries allowed (checks for semicolons)
 
-**Return Format**:
+**Return Format** (auto-detected):
+
+For COUNT queries:
 ```json
 {"count": 42}
 ```
 
-#### 3b. **query_students()** - LIST Query Tool
-
-**Purpose**: Returns detailed student records
-
-**Parameters**:
-- `enroll_after_year` (int, optional): Filter ≥ year
-- `is_active` (bool, optional): Filter by active status
-- `limit` (int, default=100): Max rows to return
-
-**SQL Generated**:
-```sql
-SELECT id, name, enroll_date FROM students 
-WHERE EXTRACT(YEAR FROM enroll_date) >= :year 
-ORDER BY enroll_date 
-LIMIT :limit
-```
-
-**Return Format**:
+For LIST queries:
 ```json
 [
   {"id": 1, "name": "Alice", "enroll_date": "2021-09-01"},
@@ -218,37 +214,68 @@ LIMIT :limit
 ]
 ```
 
-### 4. **Helper Functions**
+For errors:
+```json
+{"error": "Query execution failed: ..."}
+```
 
-- `_add_year_filter()`: Builds year-based WHERE clauses (handles SQLite vs PostgreSQL differences)
-- `_check_column_exists()`: Checks if column exists before filtering
-- `_get_table_schema_description()`: Retrieves table schema for LLM context
-- `_build_select_query()`: Dynamic SQL builder (currently unused, available for future enhancements)
+### 4. **Schema Metadata Functions**
+
+#### 4a. **get_schema_metadata()**
+
+**Purpose**: Query schema_metadata table for business descriptions
+
+**Parameters**:
+- `table_name` (str, optional): Filter by specific table, or None for all tables
+
+**Returns**: List of metadata dictionaries with:
+- table_name, column_name
+- business_name, business_description
+- data_type, is_primary_key, is_foreign_key
+- foreign_key_reference, sample_values
+
+#### 4b. **format_schema_metadata_for_llm()**
+
+**Purpose**: Format metadata into readable text for LLM context
+
+**Output Format**:
+```
+Table: students
+Business Name: Students Table
+Description: Stores all student basic information...
+Columns:
+  - id (INTEGER) [PRIMARY KEY]
+    Business Name: Student ID
+    Description: Unique identifier... (Examples: ["1", "2", "3"])
+  - name (VARCHAR)
+    Business Name: Student Name
+    Description: Full name of the student
+```
 
 ## Key Design Principles
 
-### 1. **LLM-Driven Intelligence**
-- No hardcoded SQL patterns or regex matching
-- LLM understands user intent naturally
-- Automatically selects appropriate function tool
-- Generates contextual, human-friendly responses
+### 1. **Metadata-Driven Schema Understanding**
+- Central `schema_metadata` table stores business descriptions
+- LLM receives rich context: table purposes, column meanings, sample values
+- Bridges gap between technical column names and business terminology
+- Supports multi-language: users can query in natural language, LLM maps to technical schema
 
-### 2. **Function Calling Architecture**
-- Two specialized function tools:
-  - `count_students()`: For statistical queries
-  - `query_students()`: For detailed data retrieval
-- LLM automatically chooses the right tool based on question type
-- Clear separation between query logic and presentation
+### 2. **LLM-Generated SQL**
+- No hardcoded SQL patterns or predefined function parameters
+- LLM dynamically generates SQL based on user intent and schema metadata
+- Single universal function tool: `execute_query()`
+- Maximum flexibility: handles any SELECT query structure
 
-### 3. **Two-Phase LLM Interaction**
-- **Phase 1**: Intent analysis → Function selection
+### 3. **Security-First Design**
+- Multi-layer SQL validation before execution
+- Whitelist approach: only SELECT allowed
+- Blacklist dangerous operations: INSERT, UPDATE, DELETE, DROP, etc.
+- Single statement enforcement prevents injection attacks
+
+### 4. **Two-Phase LLM Interaction**
+- **Phase 1**: Schema analysis + SQL generation → Function call
 - **Phase 2**: Result interpretation → Natural language generation
 - This approach ensures both accuracy and user-friendliness
-
-### 4. **Flexible Result Display**
-- Statistics (count): Displayed as single-value metrics
-- Details (list): Displayed as interactive DataFrames
-- Always shows both AI explanation and raw data
 
 ## Technical Details
 
@@ -260,9 +287,12 @@ LIMIT :limit
   - SQLite: String date comparison
 
 ### Security Features
-- All function tools use parameterized queries (SQLAlchemy `text()`)
-- SQL injection protection via parameter binding
-- Read-only operations enforced (SELECT only)
+- Multi-layer SQL validation in `execute_query()`:
+  1. Query type check (must start with SELECT)
+  2. Dangerous keyword detection
+  3. Multiple statement prevention
+- Read-only operations enforced
+- Parameterized queries via SQLAlchemy `text()` where applicable
 
 ### Error Handling
 - Graceful fallback when Azure OpenAI is not configured
@@ -278,18 +308,19 @@ LIMIT :limit
 **System Processing**:
 1. main.py receives: `"How many students enrolled after 2020?"`
 2. run_function_tool_flow() starts
-3. LLM (1st call) analyzes intent: "This is a COUNT query"
-4. LLM decides: `count_students(enroll_after_year=2020)`
-5. count_students() executes:
-   ```sql
-   SELECT COUNT(*) as count FROM students 
-   WHERE EXTRACT(YEAR FROM enroll_date) >= 2020
-   ```
-6. Returns: `{"count": 42}`
-7. LLM (2nd call) generates: "There are 42 students who enrolled after 2020."
-8. UI displays:
+3. Queries schema_metadata, formats with business descriptions
+4. LLM (1st call) analyzes schema and user intent: "This is a COUNT query on students table"
+5. LLM generates SQL: `execute_query(sql_query="SELECT COUNT(*) FROM students WHERE EXTRACT(YEAR FROM enroll_date) >= 2020")`
+6. execute_query() validates and executes:
+   - Security check: ✓ SELECT only
+   - Runs query via SQLAlchemy
+   - Detects COUNT query type
+7. Returns: `{"count": 42}`
+8. LLM (2nd call) generates: "There are 42 students who enrolled after 2020."
+9. UI displays:
    - 🤖 AI Response: "There are 42 students who enrolled after 2020."
    - 📊 Query Results: Table showing `count: 42`
+   - 🔍 Debug: `[Generated SQL] SELECT COUNT(*) FROM students WHERE EXTRACT(YEAR FROM enroll_date) >= 2020`
 
 ### Example 2: List Query
 
@@ -298,17 +329,16 @@ LIMIT :limit
 **System Processing**:
 1. main.py receives: `"Show me students enrolled in 2023"`
 2. run_function_tool_flow() starts
-3. LLM (1st call) analyzes: "This is a LIST query with year filter"
-4. LLM decides: `query_students(enroll_after_year=2023, limit=100)`
-5. query_students() executes:
-   ```sql
-   SELECT id, name, enroll_date FROM students 
-   WHERE EXTRACT(YEAR FROM enroll_date) >= 2023 
-   ORDER BY enroll_date LIMIT 100
-   ```
-6. Returns: `[{"id": 10, "name": "Charlie", "enroll_date": "2023-01-15"}, ...]`
-7. LLM (2nd call) generates: "Here are the students who enrolled in 2023. I found 15 students..."
-8. UI displays:
+3. Queries schema_metadata with business descriptions
+4. LLM (1st call) analyzes: "This is a LIST query with year filter"
+5. LLM generates SQL: `execute_query(sql_query="SELECT id, name, enroll_date FROM students WHERE EXTRACT(YEAR FROM enroll_date) >= 2023 ORDER BY enroll_date LIMIT 100")`
+6. execute_query() validates and executes:
+   - Security check: ✓ SELECT only, no dangerous keywords
+   - Runs query, gets 15 rows
+   - Detects LIST query type (not COUNT)
+7. Returns: `[{"id": 10, "name": "Charlie", "enroll_date": "2023-01-15"}, ...]`
+8. LLM (2nd call) generates: "Here are the students who enrolled in 2023. I found 15 students..."
+9. UI displays:
    - 🤖 AI Response: Natural language summary
    - 📊 Query Results: Interactive DataFrame with 15 rows
 
@@ -317,10 +347,15 @@ LIMIT :limit
 **User**: "How many active students enrolled before 2022?"
 
 **System Processing**:
-1. LLM analyzes: "COUNT query with TWO filters"
-2. LLM decides: `count_students(enroll_before_year=2022, is_active=True)`
-3. Executes with compound WHERE clause
-4. Returns contextual response
+1. LLM analyzes schema_metadata: finds `is_active` column with boolean type
+2. LLM generates SQL with multiple conditions:
+   ```sql
+   SELECT COUNT(*) FROM students 
+   WHERE EXTRACT(YEAR FROM enroll_date) < 2022 
+   AND is_active = true
+   ```
+3. execute_query() validates and executes
+4. Returns contextual response with count
 
 ## Advantages of This Architecture
 
@@ -329,23 +364,35 @@ LIMIT :limit
 - Conversational AI responses
 - Visual data tables
 - Handles variations in phrasing automatically
+- Business terminology understanding via metadata
 
 ### ✅ **Developer Experience**
-- Easy to add new function tools
-- LLM handles parameter extraction
-- Clear separation of concerns
+- Easy to extend: just add new tables to schema_metadata
+- LLM handles SQL generation dynamically
+- No need to create new function tools for each table
 - Type-safe with Python type hints
+- Single point of SQL execution and validation
 
 ### ✅ **Scalability**
-- Can add more tables by creating new function tools
-- Schema changes automatically reflected via `_get_table_schema_description()`
-- LLM adapts to new functions without code changes
+- Add new tables: just insert metadata, no code changes
+- Add new columns: update metadata only
+- Support complex queries without predefined patterns
+- LLM adapts to schema changes automatically
+- Multi-table joins possible (just describe relationships in metadata)
 
 ### ✅ **Maintainability**
 - No regex patterns to maintain
-- No hardcoded SQL strings (except in function tools)
-- Self-documenting via function docstrings
-- Comprehensive error handling
+- No hardcoded SQL (only LLM-generated)
+- Self-documenting via schema_metadata table
+- Comprehensive security validation in one place
+- Clear separation: metadata → LLM → SQL → results
+
+### ✅ **Security**
+- Centralized SQL validation
+- Multiple security layers
+- Read-only by design
+- Injection attack prevention
+- Audit trail via SQL logging
 
 ## Tech Stack
 

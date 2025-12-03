@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import os
 from sqlalchemy import create_engine, text
 import json
+from typing import Optional
 
 
 load_dotenv()
@@ -114,7 +115,7 @@ def _call_llm_with_fallback(client, messages, model=None, tools=None, tool_choic
 
 
 
-def execute_sql(sql: str, params: dict | None = None):
+def execute_sql(sql: str, params: Optional[dict] = None):
     """Execute a read-only SQL query and return (columns, rows).
 
     `params` is a dict passed to SQLAlchemy `text()` for safe parameterization.
@@ -131,30 +132,100 @@ def execute_sql(sql: str, params: dict | None = None):
     return list(cols), rows
 
 
-# --- Helper functions ---
-def _add_year_filter(clauses: list, params: dict, year: int, param_name: str, operator: str = ">="):
-    """Add year filter clause based on database type."""
-    if IS_SQLITE:
-        clauses.append(f"enroll_date {operator} :{param_name}")
-    else:
-        clauses.append(f"EXTRACT(YEAR FROM enroll_date) {operator} :{param_name}")
-    params[param_name] = year
-
-def _check_column_exists(conn, column_name: str, table_name: str = 'students') -> bool:
-    """Check if a column exists in the table."""
-    if IS_SQLITE:
-        return False  # Skip check for sqlite
+def get_schema_metadata(table_name: Optional[str] = None) -> list[dict]:
+    """Query schema metadata table for business descriptions.
+    
+    Args:
+        table_name: Optional table name to filter by. If None, returns all metadata.
+    
+    Returns:
+        List of metadata dictionaries containing business descriptions
+    """
+    engine = get_engine()
     try:
-        col_res = [r[0] for r in conn.execute(
-            text("SELECT column_name FROM information_schema.columns WHERE table_name = :t;"),
-            {"t": table_name}
-        ).fetchall()]
-        return column_name in col_res
-    except Exception:
-        return False
+        with engine.connect() as conn:
+            if table_name:
+                sql = text("""
+                    SELECT table_name, column_name, business_name, business_description, 
+                           data_type, is_primary_key, is_foreign_key, foreign_key_reference, sample_values
+                    FROM schema_metadata 
+                    WHERE table_name = :table_name
+                    ORDER BY 
+                        CASE WHEN column_name IS NULL THEN 0 ELSE 1 END,
+                        column_name
+                """)
+                rows = conn.execute(sql, {"table_name": table_name}).fetchall()
+            else:
+                sql = text("""
+                    SELECT table_name, column_name, business_name, business_description,
+                           data_type, is_primary_key, is_foreign_key, foreign_key_reference, sample_values
+                    FROM schema_metadata 
+                    ORDER BY table_name, 
+                        CASE WHEN column_name IS NULL THEN 0 ELSE 1 END,
+                        column_name
+                """)
+                rows = conn.execute(sql).fetchall()
+            
+            return [{
+                'table_name': r[0],
+                'column_name': r[1],
+                'business_name': r[2],
+                'business_description': r[3],
+                'data_type': r[4],
+                'is_primary_key': r[5],
+                'is_foreign_key': r[6],
+                'foreign_key_reference': r[7],
+                'sample_values': r[8]
+            } for r in rows]
+    except Exception as e:
+        # If schema_metadata table doesn't exist, return empty list
+        print(f"Warning: Failed to query schema_metadata table: {e}")
+        return []
+
+
+def format_schema_metadata_for_llm(metadata: list[dict]) -> str:
+    """Format schema metadata into a readable string for LLM.
+    
+    Args:
+        metadata: List of metadata dictionaries from get_schema_metadata()
+    
+    Returns:
+        Formatted string with business descriptions
+    """
+    if not metadata:
+        return "(No schema metadata available)"
+    
+    result = []
+    current_table = None
+    
+    for item in metadata:
+        # Table-level description
+        if item['column_name'] is None:
+            if current_table:
+                result.append("")  # Empty line between tables
+            current_table = item['table_name']
+            result.append(f"Table: {item['table_name']}")
+            result.append(f"Business Name: {item['business_name']}")
+            result.append(f"Description: {item['business_description']}")
+            result.append("Columns:")
+        # Column-level description
+        else:
+            pk_marker = " [PRIMARY KEY]" if item['is_primary_key'] else ""
+            fk_info = f" -> {item['foreign_key_reference']}" if item['is_foreign_key'] else ""
+            sample_info = f" (Examples: {item['sample_values']})" if item['sample_values'] else ""
+            
+            result.append(f"  - {item['column_name']} ({item['data_type']}){pk_marker}{fk_info}")
+            result.append(f"    Business Name: {item['business_name']}")
+            result.append(f"    Description: {item['business_description']}{sample_info}")
+    
+    return '\n'.join(result)
+
 
 def _get_table_schema_description(table_name: str) -> str:
-    """Get table schema as formatted string."""
+    """Get table schema as formatted string (fallback method).
+    
+    This is used as a fallback when schema_metadata table is not available.
+    """
     schema = []
     try:
         engine = get_engine()
@@ -173,116 +244,70 @@ def _get_table_schema_description(table_name: str) -> str:
     
     return '\n'.join([f"- {c}: {t}" for c, t in schema]) if schema else "(schema unavailable)"
 
-def _build_select_query(table: str, columns: list[str] = None, where_clauses: list[str] = None, 
-                       params: dict = None, order_by: str = None, limit: int = None) -> tuple[str, dict]:
-    """Build a SELECT SQL query dynamically.
-    
-    Args:
-        table: Table name
-        columns: List of column names to select (default: all columns)
-        where_clauses: List of WHERE conditions
-        params: Dictionary of parameters for parameterized query
-        order_by: ORDER BY clause (e.g., "enroll_date DESC")
-        limit: LIMIT value
-    
-    Returns:
-        Tuple of (sql_string, params_dict)
-    """
-    params = params or {}
-    
-    # SELECT clause
-    select_cols = ', '.join(columns) if columns else '*'
-    sql_parts = [f"SELECT {select_cols} FROM {table}"]
-    
-    # WHERE clause
-    if where_clauses:
-        sql_parts.append(f"WHERE {' AND '.join(where_clauses)}")
-    
-    # ORDER BY clause
-    if order_by:
-        sql_parts.append(f"ORDER BY {order_by}")
-    
-    # LIMIT clause
-    if limit is not None:
-        sql_parts.append(f"LIMIT {limit}")
-    
-    return ' '.join(sql_parts), params
-
 # --- Function-tool integration: define query functions that the LLM can call ---
-def count_students(enroll_after_year: int = None, enroll_before_year: int = None, is_active: bool = None):
-    """Function tool: Count students matching the criteria.
+def execute_query(user_prompt: str, sql_query: str):
+    """Function tool: Execute a generated SQL query and return results.
     
-    This function is exposed as a tool to the LLM for COUNT queries.
-    Use this when the user asks "how many", "count", "total number", etc.
+    This function is exposed as a tool to the LLM. The LLM should:
+    1. Analyze the user prompt and schema metadata
+    2. Generate appropriate SQL query
+    3. Call this function with the generated SQL
 
     Parameters:
-      - enroll_after_year: optional - count students enrolled in or after this year
-      - enroll_before_year: optional - count students enrolled before this year
-      - is_active: optional boolean to filter active students (if column exists)
+      - user_prompt: The original user question for context
+      - sql_query: The SQL SELECT query to execute (generated by LLM)
       
-    Returns: JSON string with count result
-    """
-    engine = get_engine()
-    with engine.connect() as conn:
-        clauses = []
-        params = {}
-        
-        if enroll_after_year is not None:
-            _add_year_filter(clauses, params, enroll_after_year, "year_after", ">=")
-        
-        if enroll_before_year is not None:
-            _add_year_filter(clauses, params, enroll_before_year, "year_before", "<")
-
-        if is_active is not None and _check_column_exists(conn, 'is_active'):
-            clauses.append("is_active = :is_active")
-            params['is_active'] = is_active
-
-        where_clause = " AND ".join(clauses) if clauses else "1=1"
-        sql = text(f"SELECT COUNT(*) as count FROM students WHERE {where_clause};")
-        result = conn.execute(sql, params).fetchone()
-        return json.dumps({"count": result[0]}, ensure_ascii=False)
-
-
-def query_students(enroll_after_year: int = None, is_active: bool = None, limit: int = 100):
-    """Function tool: Query students from the database and return JSON results.
+    Returns: JSON string with query results
     
-    This function is exposed as a tool to the LLM for LIST queries.
-    Use this when the user asks to "list", "show", "get details", etc.
-
-    Parameters:
-      - enroll_after_year: optional - include students enrolled in or after this year
-      - is_active: optional boolean to filter active students (if column exists)
-      - limit: maximum number of rows to return
-      
-    Returns: JSON string of list of student objects (consumed by LLM to generate natural language response)
+    Security: Only SELECT queries are allowed. Query is validated before execution.
     """
-    engine = get_engine()
-    with engine.connect() as conn:
-        clauses = []
-        params = {}
-        
-        if enroll_after_year is not None:
-            _add_year_filter(clauses, params, enroll_after_year, "year", ">=")
+    # Security validation
+    sql_upper = sql_query.strip().upper()
+    if not sql_upper.startswith('SELECT'):
+        return json.dumps({"error": "Only SELECT queries are allowed"}, ensure_ascii=False)
+    
+    # Check for dangerous keywords
+    forbidden = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'TRUNCATE', 'GRANT', 'REVOKE']
+    if any(keyword in sql_upper for keyword in forbidden):
+        return json.dumps({"error": "Query contains forbidden operations"}, ensure_ascii=False)
+    
+    # Check for multiple statements
+    if ';' in sql_query.strip().rstrip(';'):
+        return json.dumps({"error": "Multiple statements not allowed"}, ensure_ascii=False)
+    
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            result = conn.execute(text(sql_query))
+            
+            # Check if it's a COUNT query
+            if 'COUNT(*)' in sql_upper or 'COUNT(' in sql_upper:
+                row = result.fetchone()
+                return json.dumps({"count": row[0]}, ensure_ascii=False)
+            
+            # Otherwise, return rows
+            columns = result.keys()
+            rows = result.fetchall()
+            
+            # Convert to list of dicts
+            data = []
+            for row in rows:
+                record = {}
+                for i, col in enumerate(columns):
+                    value = row[i]
+                    # Handle date/datetime objects
+                    if hasattr(value, 'isoformat'):
+                        value = value.isoformat()
+                    record[col] = value
+                data.append(record)
+            
+            return json.dumps(data, ensure_ascii=False)
+            
+    except Exception as e:
+        return json.dumps({"error": f"Query execution failed: {str(e)}"}, ensure_ascii=False)
 
-        if is_active is not None and _check_column_exists(conn, 'is_active'):
-            clauses.append("is_active = :is_active")
-            params['is_active'] = is_active
 
-        where_clause = " AND ".join(clauses) if clauses else "1=1"
-        sql = text(f"SELECT id, name, enroll_date FROM students WHERE {where_clause} ORDER BY enroll_date LIMIT :limit;")
-        params['limit'] = limit
-        rows = conn.execute(sql, params).fetchall()
-        
-        result = [{
-            'id': r[0],
-            'name': r[1],
-            'enroll_date': r[2].isoformat() if hasattr(r[2], 'isoformat') else r[2]
-        } for r in rows]
-        
-        return json.dumps(result, ensure_ascii=False)
-
-
-def run_function_tool_flow(prompt: str, model: str | None = None):
+def run_function_tool_flow(prompt: str, model: Optional[str] = None):
     """Main workflow function: accepts NL prompt, uses function tool + NL generation to produce results.
     
     This is the core method called by main.py's Streamlit interface.
@@ -317,47 +342,55 @@ def run_function_tool_flow(prompt: str, model: str | None = None):
         {
             "type": "function",
             "function": {
-                "name": "count_students",
-                "description": "Count the number of students matching the criteria. Use this for 'how many', 'count', 'total number' queries.",
+                "name": "execute_query",
+                "description": "Execute a SQL SELECT query against the database. Use this to answer user questions by generating appropriate SQL based on the schema metadata provided.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "enroll_after_year": {"type": "integer", "description": "Filter students enrolled in or after this year"},
-                        "enroll_before_year": {"type": "integer", "description": "Filter students enrolled before this year"},
-                        "is_active": {"type": ["boolean", "null"], "description": "Filter by active status if column exists"}
+                        "user_prompt": {
+                            "type": "string", 
+                            "description": "The original user question for context"
+                        },
+                        "sql_query": {
+                            "type": "string",
+                            "description": "The SQL SELECT query to execute. Must be a valid SELECT statement. Use the schema metadata to determine correct table and column names. Examples: 'SELECT COUNT(*) FROM students WHERE enroll_date >= 2020' or 'SELECT id, name, enroll_date FROM students WHERE is_active = true LIMIT 10'"
+                        }
                     },
-                    "required": []
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "query_students",
-                "description": "Query and list students from the students table. Use this for 'list', 'show', 'get details' queries.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "enroll_after_year": {"type": "integer", "description": "Filter students enrolled in or after this year"},
-                        "is_active": {"type": ["boolean", "null"], "description": "Filter by active status if column exists"},
-                        "limit": {"type": "integer", "description": "Maximum number of rows to return", "default": 100}
-                    },
-                    "required": []
+                    "required": ["user_prompt", "sql_query"]
                 }
             }
         }
     ]
 
-    # Get table schema
-    schema_lines = _get_table_schema_description('students')
+    # Get ALL schema metadata (not just one table)
+    metadata = get_schema_metadata()  # Get all tables
+    if metadata:
+        schema_info = format_schema_metadata_for_llm(metadata)
+    else:
+        # Fallback to technical schema if metadata not available
+        schema_info = _get_table_schema_description('students')
 
     system = (
-        "You are a SQL-aware assistant with access to a students database via function tools. "
-        "Available table schema:\n" + schema_lines + "\n"
-        "You have two function tools available:\n"
-        "1. count_students: Use when user asks 'how many', 'count', 'total number' - returns just the count\n"
-        "2. query_students: Use when user asks to 'list', 'show', 'get details' - returns student records\n"
-        "Choose the appropriate function tool based on what the user is asking for."
+        "You are a SQL expert assistant. Your task is to:\n"
+        "1. Analyze the user's question\n"
+        "2. Use the schema metadata below to understand table and column names\n"
+        "3. Generate a valid SQL SELECT query\n"
+        "4. Call the execute_query function with your generated SQL\n\n"
+        "Database Schema with Business Descriptions:\n"
+        f"{schema_info}\n\n"
+        "Important Guidelines:\n"
+        "- Only generate SELECT queries (no INSERT/UPDATE/DELETE)\n"
+        "- Use exact table and column names from the schema above\n"
+        "- Use business descriptions to understand user intent\n"
+        "- For COUNT queries: SELECT COUNT(*) FROM table WHERE ...\n"
+        "- For LIST queries: SELECT columns FROM table WHERE ... LIMIT 100\n"
+        "- Always use proper WHERE clauses based on user filters\n"
+        "- For date comparisons in PostgreSQL, use EXTRACT(YEAR FROM date_column) or date comparisons\n"
+        "- Pay attention to data types when building WHERE clauses\n\n"
+        "Example 1: User asks 'How many students enrolled after 2020?'\n"
+        "SQL: SELECT COUNT(*) FROM students WHERE EXTRACT(YEAR FROM enroll_date) >= 2020\n\n"
+        "Example 2: User asks 'List active students'\n"
+        "SQL: SELECT id, name, enroll_date, is_active FROM students WHERE is_active = true LIMIT 100"
     )
 
     messages = [
@@ -401,26 +434,18 @@ def run_function_tool_flow(prompt: str, model: str | None = None):
             
         function_args = json.loads(func_obj.arguments)
         
-        if func_obj.name == 'count_students':
-            enroll_after_year = function_args.get('enroll_after_year', None)
-            enroll_before_year = function_args.get('enroll_before_year', None)
-            is_active = function_args.get('is_active', None)
-            function_response = count_students(enroll_after_year=enroll_after_year, enroll_before_year=enroll_before_year, is_active=is_active)
+        if func_obj.name == 'execute_query':
+            user_prompt = function_args.get('user_prompt', prompt)
+            sql_query = function_args.get('sql_query', '')
+            
+            # Log the generated SQL for debugging
+            print(f"\n[Generated SQL] {sql_query}\n")
+            
+            function_response = execute_query(user_prompt=user_prompt, sql_query=sql_query)
             messages.append({
                 "tool_call_id": tool_call.id,
                 "role": "tool",
-                "name": "count_students",
-                "content": function_response
-            })
-        elif func_obj.name == 'query_students':
-            enroll_after_year = function_args.get('enroll_after_year', None)
-            is_active = function_args.get('is_active', None)
-            limit = function_args.get('limit', 100)
-            function_response = query_students(enroll_after_year=enroll_after_year, is_active=is_active, limit=limit)
-            messages.append({
-                "tool_call_id": tool_call.id,
-                "role": "tool",
-                "name": "query_students",
+                "name": "execute_query",
                 "content": function_response
             })
 
