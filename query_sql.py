@@ -9,22 +9,12 @@ from typing import Optional
 
 load_dotenv()
 
-# Read DATABASE_URI from environment; fall back to a local sqlite file for testing
+# Read DATABASE_URI from environment
 DATABASE_URI = os.environ.get("DATABASE_URI")
-USE_SQLITE_FALLBACK = False
-# Allow an explicit opt-in to sqlite fallback for local/dev use
-ALLOW_SQLITE_FALLBACK = os.environ.get("ALLOW_SQLITE_FALLBACK", "0") == "1"
 if not DATABASE_URI:
-    if ALLOW_SQLITE_FALLBACK:
-        # explicit opt-in: use file-backed sqlite for local testing
-        DATABASE_URI = "sqlite:///./local_test.db"
-        USE_SQLITE_FALLBACK = True
-        print("Warning: DATABASE_URI not set. Using sqlite fallback because ALLOW_SQLITE_FALLBACK=1.")
-    else:
-        print("ERROR: DATABASE_URI is not set. To use Postgres set the env var DATABASE_URI, e.g.:")
-        print("  export DATABASE_URI=\"postgresql://postgres:admin@localhost:5432/mydb\"")
-        print("If you are developing locally and want to allow the sqlite fallback, set:\n  export ALLOW_SQLITE_FALLBACK=1")
-        raise SystemExit(1)
+    print("ERROR: DATABASE_URI is not set. Please set the environment variable:")
+    print("  export DATABASE_URI=\"postgresql://postgres:admin@localhost:5432/mydb\"")
+    raise SystemExit(1)
 
 # Initialize DB wrapper (lazy / best-effort). Wrap in try/except so failures don't stop simple SQL runs.
 db = None
@@ -33,27 +23,12 @@ try:
 except Exception as e:
     print(f"Warning: SQLDatabase.from_uri failed (this is non-fatal). DB URI: {DATABASE_URI}. Error: {e}")
 
-if USE_SQLITE_FALLBACK:
-    engine = create_engine(DATABASE_URI)
-    with engine.begin() as conn:
-        conn.execute(text("CREATE TABLE IF NOT EXISTS students (id INTEGER PRIMARY KEY, name TEXT);"))
-        # Ensure enroll_date column exists; if not, add it
-        cols = [r[1] for r in conn.execute(text("PRAGMA table_info('students');")).fetchall()]
-        if 'enroll_date' not in cols:
-            conn.execute(text("ALTER TABLE students ADD COLUMN enroll_date INTEGER DEFAULT 0;"))
-
-        res = conn.execute(text("SELECT COUNT(*) as c FROM students;"))
-        count = res.fetchone()[0]
-
 
 # Azure OpenAI Configuration
 AZURE_KEY = os.environ.get("AZURE_OPENAI_API_KEY")
 AZURE_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2025-04-01-preview")
 AZURE_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT","https://ai-proxy.lab.epam.com")
 DEFAULT_MODEL = os.environ.get("MODEL", "gpt-4o")
-
-# Database helpers
-IS_SQLITE = DATABASE_URI.startswith("sqlite")
 
 # Create a single shared engine instance
 _engine = None
@@ -230,15 +205,12 @@ def _get_table_schema_description(table_name: str) -> str:
     try:
         engine = get_engine()
         with engine.connect() as conn:
-            if IS_SQLITE:
-                res = conn.execute(text(f"PRAGMA table_info('{table_name}');")).fetchall()
-                schema = [(r[1], r[2]) for r in res]
-            else:
-                res = conn.execute(
-                    text("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :t;"),
-                    {"t": table_name}
-                ).fetchall()
-                schema = [(r[0], r[1]) for r in res]
+            # Use PostgreSQL information_schema
+            res = conn.execute(
+                text("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = :t;"),
+                {"t": table_name}
+            ).fetchall()
+            schema = [(r[0], r[1]) for r in res]
     except Exception:
         pass
     
