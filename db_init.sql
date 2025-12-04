@@ -80,10 +80,20 @@ SET
 -- Create index for faster queries
 CREATE INDEX IF NOT EXISTS idx_schema_metadata_table ON schema_metadata(table_name);
 
+-- Insert metadata for weather table
 INSERT INTO schema_metadata (
     table_name, column_name, business_name, business_description, data_type, is_primary_key, sample_values
 ) VALUES
+('weather', NULL, 'Weather Records', 'Stores historical weather observation data for various cities and regions', NULL, FALSE, NULL),
 ('weather', 'id', 'Record ID', 'Primary key that uniquely identifies each weather record', 'SERIAL', TRUE, '1, 2, 3'),
 ('weather', 'location', 'Location', 'Name of the city or region where the weather is observed', 'VARCHAR(100)', FALSE, 'Beijing, Shanghai, Guangzhou'),
 ('weather', 'date', 'Date', 'Date of the weather observation', 'DATE', FALSE, '2025-12-01, 2025-12-02'),
-('weather', 'weather', 'Weather', 'Description of the weather condition on the given date', 'VARCHAR(50)', FALSE, 'Sunny, Cloudy, Rainy, Snowy');
+('weather', 'weather', 'Weather', 'Description of the weather condition on the given date', 'VARCHAR(50)', FALSE, 'Sunny, Cloudy, Rainy, Snowy')
+ON CONFLICT (table_name, column_name) DO UPDATE 
+SET 
+    business_name = EXCLUDED.business_name,
+    business_description = EXCLUDED.business_description,
+    data_type = EXCLUDED.data_type,
+    is_primary_key = EXCLUDED.is_primary_key,
+    sample_values = EXCLUDED.sample_values,
+    updated_at = CURRENT_TIMESTAMP;

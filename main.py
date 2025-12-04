@@ -4,13 +4,13 @@ import json
 from query_sql import run_function_tool_flow, DATABASE_URI
 
 st.set_page_config(page_title="Text to SQL", layout="wide")
-st.title("Ask your `students` table")
+st.title("Text to SQL - Multi-Table Query System")
 
 st.write(f"Using `DATABASE_URI`: `{DATABASE_URI}`")
 
 if 'nl_prompt' not in st.session_state:
     st.session_state['nl_prompt'] = "How many students do you have?"
-prompt = st.text_input("Enter a question about the `students` table", key='nl_prompt')
+prompt = st.text_input("Enter your question about data you have in database", key='nl_prompt')
 
 if st.button("Generate and Query"):
     try:
@@ -49,4 +49,4 @@ if st.button("Generate and Query"):
         st.error(f"Failed to process query: {e}")
 
 st.markdown("---")
-st.caption("This app translates a natural language prompt into a safe SELECT SQL statement targeting the `students` table. Execution is optional and runs against the configured DATABASE_URI.")
+st.caption("This app translates natural language questions into SQL queries. It intelligently identifies relevant tables based on your question and generates secure SELECT statements. Supports multi-table queries with automatic schema detection.")

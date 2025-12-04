@@ -107,6 +107,57 @@ def execute_sql(sql: str, params: Optional[dict] = None):
     return list(cols), rows
 
 
+def get_all_table_names() -> list[str]:
+    """Get all table names from schema_metadata.
+    
+    Returns:
+        List of table names that have metadata
+    """
+    engine = get_engine()
+    try:
+        with engine.connect() as conn:
+            sql = text("""
+                SELECT DISTINCT table_name 
+                FROM schema_metadata 
+                WHERE column_name IS NULL
+                ORDER BY table_name
+            """)
+            rows = conn.execute(sql).fetchall()
+            return [r[0] for r in rows]
+    except Exception as e:
+        print(f"Warning: Failed to get table names from schema_metadata: {e}")
+        return []
+
+
+def get_table_summaries() -> list[dict]:
+    """Get table names with their business descriptions for fuzzy matching.
+    
+    Returns:
+        List of dicts with table_name, business_name, and business_description
+    """
+    engine = get_engine()
+    try:
+        with engine.connect() as conn:
+            sql = text("""
+                SELECT table_name, business_name, business_description 
+                FROM schema_metadata 
+                WHERE column_name IS NULL
+                ORDER BY table_name
+            """)
+            rows = conn.execute(sql).fetchall()
+            return [
+                {
+                    'table_name': r[0],
+                    'business_name': r[1],
+                    'business_description': r[2]
+                }
+                for r in rows
+            ]
+    except Exception as e:
+        print(f"Warning: Failed to get table summaries from schema_metadata: {e}")
+        return []
+
+
 def get_schema_metadata(table_name: Optional[str] = None) -> list[dict]:
     """Query schema metadata table for business descriptions.
     
@@ -286,14 +337,14 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
     
     Flow:
     1. Receives natural language prompt from main.py
-    2. Uses LLM with function calling capability to invoke query_students
-    3. query_students executes SQL query and returns JSON data
-    4. LLM generates natural language response based on query results
-    5. Returns (assistant_text, tool_output) to main.py for display
+    2. First LLM call: Analyze prompt and identify relevant tables
+    3. Query schema_metadata only for identified tables (token optimization)
+    4. Second LLM call: Generate SQL based on relevant schema
+    5. Execute SQL and return results
 
     Returns a tuple: (assistant_text: str, tool_response_json: str|None)
     - assistant_text: Natural language response explaining the results
-    - tool_response_json: Raw JSON output from query_students function (or None if no function called)
+    - tool_response_json: Raw JSON output from execute_query function (or None if no function called)
     """
     if not AZURE_KEY:
         raise RuntimeError("AZURE_OPENAI_API_KEY is not set; cannot run LLM function-tool flow")
@@ -310,6 +361,87 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
         azure_endpoint=AZURE_ENDPOINT,
     )
 
+    model = model or DEFAULT_MODEL
+
+    # Step 1: Get table summaries (names + business descriptions) for fuzzy matching
+    table_summaries = get_table_summaries()
+    
+    if not table_summaries:
+        # Fallback: schema_metadata table doesn't exist or is empty
+        metadata = get_schema_metadata()
+        if metadata:
+            schema_info = format_schema_metadata_for_llm(metadata)
+        else:
+            schema_info = _get_table_schema_description('students')
+    else:
+        # Step 2: Use LLM to fuzzy match relevant tables based on prompt
+        # Build table info string with business descriptions for better matching
+        table_info_lines = []
+        for t in table_summaries:
+            table_info_lines.append(
+                f"- {t['table_name']}: {t['business_name']} - {t['business_description']}"
+            )
+        table_info_str = "\n".join(table_info_lines)
+        
+        identification_prompt = (
+            f"Available database tables with descriptions:\n{table_info_str}\n\n"
+            f"User question: {prompt}\n\n"
+            "Analyze the user's question and identify which tables are relevant or related to answer it. "
+            "Consider:\n"
+            "1. Direct mentions (e.g., 'students' → students table)\n"
+            "2. Business concepts (e.g., 'enrollment' → students table, 'climate data' → weather table)\n"
+            "3. Related tables that might be needed for joins\n\n"
+            "Return ONLY the table names as a comma-separated list, nothing else.\n"
+            "If unsure, include potentially relevant tables rather than exclude them.\n"
+            "Example output: students, courses"
+        )
+        
+        identification_messages = [
+            {"role": "system", "content": "You are a database schema analyzer. Analyze user questions and identify relevant tables based on semantic meaning and business context. Return only table names."},
+            {"role": "user", "content": identification_prompt}
+        ]
+        
+        try:
+            identification_response = client.chat.completions.create(
+                model=model,
+                messages=identification_messages,
+                temperature=0
+            )
+            identified_tables_str = identification_response.choices[0].message.content.strip()
+            
+            # Parse identified tables
+            identified_tables = [t.strip() for t in identified_tables_str.split(',') if t.strip()]
+            
+            # Validate and filter to only existing tables
+            all_table_names = [t['table_name'] for t in table_summaries]
+            identified_tables = [t for t in identified_tables if t in all_table_names]
+            
+            # Log identified tables
+            print(f"\n[Table Fuzzy Match] Found {len(identified_tables)} relevant tables: {', '.join(identified_tables) if identified_tables else '(none)'}")
+            
+            if not identified_tables:
+                # If no tables identified, use all tables as fallback
+                print(f"[Fallback] No tables matched, loading all {len(all_table_names)} tables\n")
+                identified_tables = all_table_names
+            else:
+                print(f"[Token Optimization] Loading {len(identified_tables)}/{len(all_table_names)} tables\n")
+                
+        except Exception as e:
+            print(f"Warning: Table identification failed: {e}. Using all tables as fallback.")
+            identified_tables = [t['table_name'] for t in table_summaries]
+        
+        # Step 3: Get detailed schema metadata only for identified tables
+        metadata = []
+        for table in identified_tables:
+            table_metadata = get_schema_metadata(table)
+            metadata.extend(table_metadata)
+        
+        if metadata:
+            schema_info = format_schema_metadata_for_llm(metadata)
+        else:
+            schema_info = _get_table_schema_description('students')
+
+    # Step 4: Prepare tools for SQL generation
     tools = [
         {
             "type": "function",
@@ -333,14 +465,6 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
             }
         }
     ]
-
-    # Get ALL schema metadata (not just one table)
-    metadata = get_schema_metadata()  # Get all tables
-    if metadata:
-        schema_info = format_schema_metadata_for_llm(metadata)
-    else:
-        # Fallback to technical schema if metadata not available
-        schema_info = _get_table_schema_description('students')
 
     system = (
         "You are a SQL expert assistant. Your task is to:\n"
@@ -370,9 +494,7 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
         {"role": "user", "content": prompt}
     ]
 
-    model = model or DEFAULT_MODEL
-
-    # first call
+    # Step 5: SQL generation call
     response = _call_llm_with_fallback(client, messages, model=model, tools=tools, tool_choice="auto")
     response_message = response.choices[0].message
 
@@ -397,7 +519,7 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
         ]
     })
 
-    # execute tool calls
+    # Step 6: Execute tool calls
     function_response = None
     for tool_call in tool_calls:
         func_obj = getattr(tool_call, 'function', None)
@@ -421,7 +543,7 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
                 "content": function_response
             })
 
-    # final assistant call with tool outputs
+    # Step 7: Final assistant call with tool outputs
     final_response = _call_llm_with_fallback(client, messages, model=model, tools=tools)
     final_text = final_response.choices[0].message.content
     # return final assistant text and the raw tool output (function_response)
