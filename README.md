@@ -18,13 +18,11 @@ Create a `.env` file in the project root with the following variables:
 
 ```bash
 # Database connection (PostgreSQL recommended)
-DATABASE_URI="postgresql://<user>:<pass>@<host>:<port>/<db>"
-
-# Azure OpenAI Configuration (Required)
 AZURE_OPENAI_API_KEY="your-api-key"
-AZURE_OPENAI_ENDPOINT="https://ai-proxy.lab.epam.com"
-OPENAI_API_VERSION="2025-04-01-preview"
-MODEL="gpt-4o"
+AZURE_OPENAI_ENDPOINT="your-endpoint"
+OPENAI_API_VERSION="open-api-version"
+MODEL="model-name" # e.g., gpt-4o
+DATABASE_URI="postgresql://<user>:<pass>@<host>:<port>/<db>"
 ```
 
 ## Setup
@@ -32,11 +30,6 @@ MODEL="gpt-4o"
 ### 1. Install Dependencies
 
 ```bash
-# Using virtual environment
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Or using conda
 conda activate myenv
 pip install -r requirements.txt
 ```
@@ -47,12 +40,13 @@ Run the database initialization script to create tables and metadata:
 
 ```bash
 # Connect to your PostgreSQL database and run:
-psql -U <username> -d <database> -f schema_metadata.sql
+psql -U <username> -d <database> -f db_init.sql
 ```
 
 This creates:
 - `students` table with sample data
 - `weather` table with sample data
+- `teacher` table with sample data
 - `schema_metadata` table with business descriptions for both tables
 
 ## Run Application
@@ -92,6 +86,15 @@ Phase 4: Generate SQL with identified schema
   → SQL: SELECT * FROM weather WHERE location = 'Shanghai'
   ↓
 Phase 5: Execute and return results
+```
+### DB init after install postgre
+```bash
+conda activate myenv
+psql -U postgres
+CREATE DATABASE mydb;
+logout:ctrl+Z
+sudo -i -u postgres
+psql -U postgres -d mydb
 ```
 
 ### Fuzzy Table Matching
@@ -213,11 +216,6 @@ Test the system with various queries:
 # Start the app
 streamlit run app.py
 
-# Try these queries in the UI:
-# 1. "How many students enrolled in 2020?"
-# 2. "What's the weather in Shanghai?"
-# 3. "List all active students"
-# 4. "Show weather for December 1st"
 ```
 
 Check the logs for table identification:
@@ -278,34 +276,9 @@ students-project-13/
 - `execute_query(user_prompt, sql_query)`: Universal SQL executor with security validation
 - `run_function_tool_flow(prompt, model)`: Main orchestrator with three-phase workflow
 
-## Contributing
-
-1. Create a new branch from `main`
-2. Make your changes
-3. Test thoroughly (especially table identification and SQL generation)
-4. Ensure schema_metadata entries have both table-level and column-level records
-5. Open a Merge Request
-
-## Migration from Fixed Functions
-
-This system has evolved from fixed function tools to dynamic SQL generation:
-
-| Old Approach | New Approach |
-|--------------|--------------|
-| `count_students()` | `execute_query()` with dynamic SQL |
-| `query_students()` | `execute_query()` with dynamic SQL |
-| Fixed function tools | Single universal function tool |
-| Load all metadata | Load only relevant tables |
 
 ---
 
 For more information:
 - [Architecture Documentation](ARCHITECTURE.md)
 
-## DB init after install postgre
-conda activate myenv
-psql -U postgres
-CREATE DATABASE mydb;
-logout:ctrl+Z
-sudo -i -u postgres
-psql -U postgres -d mydb
