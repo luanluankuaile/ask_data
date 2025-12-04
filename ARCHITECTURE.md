@@ -2,11 +2,11 @@
 
 ## System Overview
 
-This is a Natural Language to SQL application that uses Azure OpenAI's LLM with function calling capability to intelligently query a students database. Users input natural language questions, and the system automatically generates SQL queries, executes them, and returns results in both natural language and table format.
+This is a Natural Language to SQL application that uses Azure OpenAI's LLM with function calling capability to intelligently query a multi-table database (students, weather, teacher). The system features **token-optimized fuzzy table matching** that identifies relevant tables before loading detailed schemas, reducing token consumption by 70-90% for large databases. Users input natural language questions, and the system automatically generates SQL queries, executes them, and returns results in both natural language and table format.
 
 ## Method Call Relationships
 
-### Main Flow (with Azure OpenAI)
+### Main Flow (with Azure OpenAI and Token Optimization)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -14,40 +14,73 @@ This is a Natural Language to SQL application that uses Azure OpenAI's LLM with 
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 1. main.py: Streamlit receives prompt                          │
+│ 1. app.py: Streamlit receives prompt                          │
 │    - User enters question in text input                         │
 │    - Clicks "Generate and Query" button                         │
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 2. main.py calls: run_function_tool_flow(prompt)               │
+│ 2. app.py calls: run_function_tool_flow(prompt)               │
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │ 3. run_function_tool_flow: Initialize LLM client               │
 │    - Creates Azure OpenAI client                                │
-│    - Query schema_metadata table for ALL tables                 │
-│    - Format metadata with business descriptions                 │
-│    - Prepares function tool definition:                         │
-│      • execute_query() - executes LLM-generated SQL             │
+│    STEP 1: Get table summaries (fuzzy matching)                │
+│    - Calls get_table_summaries() → returns:                    │
+│      [{'table_name': 'students',                               │
+│        'business_name': 'Students Table',                      │
+│        'business_description': 'Stores student info...'},      │
+│       {'table_name': 'weather', ...},                          │
+│       {'table_name': 'teacher', ...}]                          │
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 4. First LLM Call: Analyze prompt and generate SQL             │
+│ 4. First LLM Call (_call_llm_with_fallback): Table Identification│
+│    STEP 2: Fuzzy match relevant tables                         │
 │    Input:                                                        │
-│    - System: Full schema metadata with business descriptions    │
-│      Example: "Table: students                                  │
-│                Business Name: Students Table                    │
-│                Columns: id, name, enroll_date..."               │
+│    - System: "You are a database schema analyzer..."            │
+│    - Available tables:                                           │
+│      "- students: Students Table - Stores student info          │
+│       - weather: Weather Records - Stores weather data          │
+│       - teacher: Teachers Table - Stores faculty info"          │
 │    - User: "How many students enrolled after 2020?"            │
 │    Output:                                                       │
-│    - LLM generates SQL:                                         │
-│      execute_query(sql_query="SELECT COUNT(*) FROM students    │
-│                     WHERE EXTRACT(YEAR FROM enroll_date) >= 2020")│
+│    - LLM identifies: "students"                                 │
+│    Log: "[Table Fuzzy Match] Found 1 relevant tables: students"│
+│         "[Token Optimization] Loading 1/3 tables"               │
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 5. Execute Function Tool: execute_query(sql_query=...)         │
+│ 5. Load Detailed Schema for Identified Tables Only             │
+│    STEP 3: Query detailed metadata only for 'students'         │
+│    - Calls get_schema_metadata('students')                     │
+│    - Format with format_schema_metadata_for_llm()              │
+│    - Result: Full column details ONLY for students table       │
+│    - Token saved: ~67% (loaded 1/3 tables instead of all)      │
+└────────────────────────┬────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 6. Second LLM Call (_call_llm_with_fallback): Generate SQL    │
+│    STEP 4: Analyze schema and generate SQL                     │
+│    Input:                                                        │
+│    - System: Full schema metadata (students table only)         │
+│      "Table: students                                           │
+│       Business Name: Students Table                             │
+│       Columns: id, name, enroll_date, is_active..."            │
+│    - User: "How many students enrolled after 2020?"            │
+│    - Tools: [execute_query function definition]                │
+│    Output:                                                       │
+│    - LLM generates function call:                               │
+│      execute_query(user_prompt="How many students...",         │
+│                    sql_query="SELECT COUNT(*) FROM students    │
+│                     WHERE EXTRACT(YEAR FROM enroll_date) >= 2020")│
+│    Log: "[Generated SQL] SELECT COUNT(*) FROM students..."     │
+└────────────────────────┬────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 7. Execute Function Tool: execute_query(sql_query=...)         │
+│    STEP 5: Validate and execute SQL                            │
 │    - Security validation: Check SELECT only, no dangerous ops   │
 │    - Execute generated SQL via SQLAlchemy                       │
 │    - Auto-detect query type (COUNT vs LIST)                     │
@@ -55,7 +88,8 @@ This is a Natural Language to SQL application that uses Azure OpenAI's LLM with 
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 6. Second LLM Call: Generate natural language response         │
+│ 8. Third LLM Call (_call_llm_with_fallback): Generate Response│
+│    STEP 6: Generate natural language response                  │
 │    Input:                                                        │
 │    - Previous conversation context                              │
 │    - Tool result: {"count": 42}                                 │
@@ -65,47 +99,81 @@ This is a Natural Language to SQL application that uses Azure OpenAI's LLM with 
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 7. Return to main.py:                                           │
+│ 9. Return to app.py:                                           │
 │    - assistant_text: "There are 42 students..."                │
 │    - tool_output: '{"count": 42}'                              │
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 8. main.py: Display results in Streamlit                       │
+│ 10. app.py: Display results in Streamlit                      │
 │    - Shows AI response text                                     │
 │    - Parses JSON and displays as DataFrame table               │
 │    - Stores in session_state for reference                      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Alternative Flow: List Query Example
+### Alternative Flow: Weather Query Example
 
 ```
-User: "List students enrolled after 2020"
+User: "How is the weather in Shanghai?"
     ↓
-LLM analyzes schema metadata and generates SQL:
-    execute_query(sql_query="SELECT id, name, enroll_date FROM students 
-                             WHERE EXTRACT(YEAR FROM enroll_date) >= 2020 
-                             LIMIT 100")
+STEP 1: Get table summaries
+    → Returns: students, weather, teacher
     ↓
-execute_query() validates and executes SQL
+STEP 2: LLM identifies relevant tables (fuzzy matching)
+    → Analyzes: "weather in Shanghai" → semantic match
+    → Identifies: weather table
+    → Log: "[Table Fuzzy Match] Found 1 relevant tables: weather"
+    → Log: "[Token Optimization] Loading 1/3 tables"
     ↓
-Returns: [{"id": 1, "name": "Alice", "enroll_date": "2021-09-01"}, ...]
+STEP 3: Load detailed schema only for weather table
+    → get_schema_metadata('weather')
+    → Saves: ~67% tokens (loads 1 table instead of 3)
     ↓
-LLM generates: "Here are the students who enrolled after 2020..."
+STEP 4: LLM generates SQL with weather schema
+    execute_query(sql_query="SELECT * FROM weather WHERE location = 'Shanghai'")
+    ↓
+STEP 5: execute_query() validates and executes SQL
+    ↓
+Returns: [{"id": 2, "location": "Shanghai", "date": "2025-12-01", "weather": "Cloudy"}, ...]
+    ↓
+STEP 6: LLM generates: "In Shanghai, the weather is Cloudy on 2025-12-01..."
     ↓
 Display: Natural language + DataFrame table
+```
+
+### Alternative Flow: Teacher Query Example
+
+```
+User: "List professors with more than 15 years experience"
+    ↓
+STEP 1: Get table summaries
+    ↓
+STEP 2: LLM fuzzy match
+    → Analyzes: "professors" + "experience" → teacher table
+    → Identifies: teacher
+    → Log: "[Table Fuzzy Match] Found 1 relevant tables: teacher"
+    ↓
+STEP 3: Load teacher table schema only
+    ↓
+STEP 4: LLM generates SQL
+    execute_query(sql_query="SELECT * FROM teacher 
+                             WHERE title = 'Professor' 
+                             AND teach_years > 15 
+                             LIMIT 100")
+    ↓
+Returns: List of professors with experience details
 ```
 
 ### Fallback Flow (without Azure OpenAI)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ 1. main.py: Checks AZURE_OPENAI_API_KEY not set               │
+│ 1. app.py: Checks AZURE_OPENAI_API_KEY not set               │
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 2. main.py calls: generate_sql_from_prompt(prompt)            │
+│ 2. app.py calls: generate_sql_from_prompt(prompt)            │
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -114,14 +182,14 @@ Display: Natural language + DataFrame table
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 4. main.py: Display error message                              │
+│ 4. app.py: Display error message                              │
 │    - Shows: "Please set AZURE_OPENAI_API_KEY"                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Detailed Component Explanation
 
-### 1. **main.py** - Streamlit UI Layer
+### 1. **app.py** - Streamlit UI Layer
 
 **Responsibilities**: 
 - Provides web interface for user interaction
@@ -141,47 +209,79 @@ Display: Natural language + DataFrame table
 
 **Responsibilities**:
 - Acts as the main orchestrator of the LLM-based workflow
+- Implements three-phase token optimization strategy
 - Manages Azure OpenAI client and function calling
 - Coordinates between LLM and database functions
 - Generates natural language responses
 
-**Detailed Workflow**:
+**Detailed Workflow with Token Optimization**:
 
 1. **Setup Phase**:
    - Creates Azure OpenAI client with credentials
-   - Calls `get_schema_metadata()` to retrieve ALL table metadata
-   - Calls `format_schema_metadata_for_llm()` to format with business descriptions
-   - Defines function tool specification: `execute_query()` (JSON schema)
 
-2. **First LLM Interaction**:
+2. **Phase 1: Get Table Summaries (Fuzzy Matching Preparation)**:
+   - Calls `get_table_summaries()` to retrieve:
+     - table_name
+     - business_name  
+     - business_description
+   - Returns lightweight summaries for ALL tables (no column details)
+   - Example: `[{'table_name': 'students', 'business_name': 'Students Table', 'business_description': 'Stores student info...'}, ...]`
+
+3. **Phase 2: LLM Table Identification (First LLM Call via _call_llm_with_fallback)**:
+   - Builds identification prompt with table summaries
+   - Sends to LLM with system role: "You are a database schema analyzer"
+   - LLM performs semantic matching based on:
+     - Direct mentions (e.g., "students" → students table)
+     - Business concepts (e.g., "enrollment" → students, "weather" → weather)
+     - Related tables for potential joins
+   - LLM returns: comma-separated table names (e.g., "students, teacher")
+   - System parses and validates identified tables
+   - **Logs**: `[Table Fuzzy Match] Found N relevant tables: xxx`
+   - **Logs**: `[Token Optimization] Loading N/M tables` 
+   - **Fallback**: If no tables matched, loads all tables
+
+4. **Phase 3: Load Detailed Schemas for Identified Tables Only**:
+   - For each identified table:
+     - Calls `get_schema_metadata(table_name)`
+     - Retrieves full column-level metadata
+   - Calls `format_schema_metadata_for_llm()` to format with business descriptions
+   - **Token Savings**: 70-90% reduction for large schemas
+
+5. **Phase 4: SQL Generation (Second LLM Call via _call_llm_with_fallback)**:
    - Sends prompt with:
      - System context: "You are a SQL expert assistant..."
-     - Full schema metadata with business names and descriptions
+     - Schema metadata (ONLY identified tables, not all tables)
      - Guidelines for SQL generation
-   - LLM analyzes user intent and schema metadata
+     - Function tool definition: `execute_query(user_prompt, sql_query)`
+   - LLM analyzes user intent and relevant schema metadata
    - LLM generates appropriate SQL SELECT query
    - Returns `tool_calls` with `sql_query` parameter
+   - **Logs**: `[Generated SQL] SELECT ...`
 
-3. **Function Execution Phase**:
+6. **Phase 5: Function Execution**:
    - Parses `tool_calls` to get SQL query string
-   - Logs generated SQL for debugging: `[Generated SQL] SELECT ...`
    - Calls `execute_query(user_prompt, sql_query)`
    - SQL is validated (security checks)
    - Query is executed via SQLAlchemy
    - Collects JSON result (auto-detects COUNT vs LIST format)
 
-4. **Second LLM Interaction**:
+7. **Phase 6: Natural Language Response (Third LLM Call via _call_llm_with_fallback)**:
    - Sends conversation history + tool results back to LLM
    - LLM generates human-friendly explanation
    - Returns final assistant text
 
-5. **Return Phase**:
+8. **Return Phase**:
    - Returns tuple: `(assistant_text, tool_output)`
-   - Both values are used by main.py for display
+   - Both values are used by app.py for display
 
 **Return Values**:
 - `assistant_text` (str): Natural language explanation from LLM
 - `tool_output` (str|None): Raw JSON from function tool
+
+**LLM Call Wrapper**:
+- All LLM calls use `_call_llm_with_fallback(client, messages, model, tools, tool_choice)`
+- Provides compatibility with different LLM client APIs
+- Ensures consistent error handling across all phases
 
 ### 3. **query_sql.py: Function Tools** - Database Access Layer
 
@@ -221,20 +321,41 @@ For errors:
 
 ### 4. **Schema Metadata Functions**
 
-#### 4a. **get_schema_metadata()**
+#### 4a. **get_table_summaries()**
 
-**Purpose**: Query schema_metadata table for business descriptions
+**Purpose**: Get lightweight table summaries for fuzzy matching (Phase 1)
+
+**Returns**: List of dicts with:
+- table_name (str)
+- business_name (str)
+- business_description (str)
+
+**SQL Query**:
+```sql
+SELECT table_name, business_name, business_description 
+FROM schema_metadata 
+WHERE column_name IS NULL  -- Table-level records only
+ORDER BY table_name
+```
+
+**Usage**: First phase of token optimization - provides LLM with table options without loading all column details
+
+#### 4b. **get_schema_metadata(table_name)**
+
+**Purpose**: Query detailed schema metadata for specific tables (Phase 3)
 
 **Parameters**:
 - `table_name` (str, optional): Filter by specific table, or None for all tables
 
 **Returns**: List of metadata dictionaries with:
-- table_name, column_name
+- table_name, column_name (None for table-level)
 - business_name, business_description
 - data_type, is_primary_key, is_foreign_key
 - foreign_key_reference, sample_values
 
-#### 4b. **format_schema_metadata_for_llm()**
+**Usage**: After table identification, loads full column details only for relevant tables
+
+#### 4c. **format_schema_metadata_for_llm()**
 
 **Purpose**: Format metadata into readable text for LLM context
 
@@ -252,45 +373,83 @@ Columns:
     Description: Full name of the student
 ```
 
+**Usage**: Converts metadata dictionaries into structured text for LLM prompt
+
 ## Key Design Principles
 
-### 1. **Metadata-Driven Schema Understanding**
+### 1. **Token-Optimized Fuzzy Table Matching**
+- **Three-Phase Workflow**:
+  - Phase 1: Get all table summaries (lightweight)
+  - Phase 2: LLM identifies relevant tables via semantic matching
+  - Phase 3: Load detailed schemas only for identified tables
+- **Semantic Matching**: LLM understands business concepts
+  - "enrollment" → students table
+  - "weather" or "climate" → weather table
+  - "professors" or "faculty" → teacher table
+- **Token Savings**: 70-90% reduction for databases with 10+ tables
+- **Fallback**: If no tables identified, loads all tables (safe default)
+
+### 2. **Metadata-Driven Schema Understanding**
 - Central `schema_metadata` table stores business descriptions
+- **Two-level metadata**:
+  - Table-level (column_name IS NULL): For fuzzy matching
+  - Column-level: For SQL generation
 - LLM receives rich context: table purposes, column meanings, sample values
 - Bridges gap between technical column names and business terminology
 - Supports multi-language: users can query in natural language, LLM maps to technical schema
 
-### 2. **LLM-Generated SQL**
+### 3. **LLM-Generated SQL**
 - No hardcoded SQL patterns or predefined function parameters
 - LLM dynamically generates SQL based on user intent and schema metadata
-- Single universal function tool: `execute_query()`
+- Single universal function tool: `execute_query(user_prompt, sql_query)`
 - Maximum flexibility: handles any SELECT query structure
+- All LLM calls unified through `_call_llm_with_fallback()` wrapper
 
-### 3. **Security-First Design**
+### 4. **Security-First Design**
 - Multi-layer SQL validation before execution
 - Whitelist approach: only SELECT allowed
 - Blacklist dangerous operations: INSERT, UPDATE, DELETE, DROP, etc.
 - Single statement enforcement prevents injection attacks
 
-### 4. **Two-Phase LLM Interaction**
-- **Phase 1**: Schema analysis + SQL generation → Function call
-- **Phase 2**: Result interpretation → Natural language generation
-- This approach ensures both accuracy and user-friendliness
+### 5. **Three-Phase LLM Interaction**
+- **Phase 1**: Table identification → Fuzzy matching (1st LLM call)
+- **Phase 2**: Schema analysis + SQL generation → Function call (2nd LLM call)
+- **Phase 3**: Result interpretation → Natural language generation (3rd LLM call)
+- This approach ensures accuracy, token efficiency, and user-friendliness
 
 ## Technical Details
 
-### Database Abstraction
-- Supports both PostgreSQL and SQLite
-- Automatic dialect detection via `IS_SQLITE` flag
-- Helper functions handle SQL differences:
-  - PostgreSQL: `EXTRACT(YEAR FROM date)`
-  - SQLite: String date comparison
+### Database Support
+- Primary: PostgreSQL (recommended)
+- Schema metadata stored in `schema_metadata` table
+- Three main data tables:
+  - `students`: Student enrollment and graduation data
+  - `weather`: Weather observations by location and date
+  - `teacher`: Faculty information with teaching experience
+
+### LLM Integration
+- **Client Wrapper**: `_call_llm_with_fallback(client, messages, model, tools, tool_choice)`
+  - Primary: OpenAI-style API (`client.chat.completions.create()`)
+  - Fallback: LangChain or callable LLM clients
+  - Ensures compatibility across different LLM providers
+- **Three LLM Calls per Query**:
+  1. Table identification (fuzzy matching)
+  2. SQL generation (with function calling)
+  3. Natural language response generation
+
+### Token Optimization Strategy
+- **Baseline (no optimization)**: Load all 3 tables with all columns
+- **With optimization**: Load 1-2 relevant tables only
+- **Savings**: 
+  - 3 tables → 1 table = ~67% token reduction
+  - 10 tables → 2 tables = ~80% token reduction
+  - 50 tables → 3 tables = ~94% token reduction
 
 ### Security Features
 - Multi-layer SQL validation in `execute_query()`:
   1. Query type check (must start with SELECT)
-  2. Dangerous keyword detection
-  3. Multiple statement prevention
+  2. Dangerous keyword detection (INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, REVOKE)
+  3. Multiple statement prevention (no semicolons except trailing)
 - Read-only operations enforced
 - Parameterized queries via SQLAlchemy `text()` where applicable
 
@@ -301,63 +460,104 @@ Columns:
 
 ## Example Dialog Flows
 
-### Example 1: Count Query
+### Example 1: Count Query with Token Optimization
 
 **User**: "How many students enrolled after 2020?"
 
 **System Processing**:
-1. main.py receives: `"How many students enrolled after 2020?"`
+1. app.py receives: `"How many students enrolled after 2020?"`
 2. run_function_tool_flow() starts
-3. Queries schema_metadata, formats with business descriptions
-4. LLM (1st call) analyzes schema and user intent: "This is a COUNT query on students table"
-5. LLM generates SQL: `execute_query(sql_query="SELECT COUNT(*) FROM students WHERE EXTRACT(YEAR FROM enroll_date) >= 2020")`
-6. execute_query() validates and executes:
+3. **Phase 1**: Get table summaries → `[students, weather, teacher]`
+4. **Phase 2**: LLM identifies relevant tables
+   - Prompt: "Available tables: students (student info), weather (weather data), teacher (faculty info)"
+   - User question: "How many students enrolled after 2020?"
+   - LLM analyzes: "This is about students"
+   - LLM returns: "students"
+   - Log: `[Table Fuzzy Match] Found 1 relevant tables: students`
+   - Log: `[Token Optimization] Loading 1/3 tables`
+5. **Phase 3**: Load detailed schema only for students table (saves 67% tokens)
+6. **Phase 4**: LLM (2nd call) generates SQL: 
+   ```sql
+   SELECT COUNT(*) FROM students 
+   WHERE EXTRACT(YEAR FROM enroll_date) >= 2020
+   ```
+   - Log: `[Generated SQL] SELECT COUNT(*) FROM students WHERE...`
+7. execute_query() validates and executes:
    - Security check: ✓ SELECT only
    - Runs query via SQLAlchemy
    - Detects COUNT query type
-7. Returns: `{"count": 42}`
-8. LLM (2nd call) generates: "There are 42 students who enrolled after 2020."
+   - Returns: `{"count": 42}`
+8. **Phase 5**: LLM (3rd call) generates: "There are 42 students who enrolled after 2020."
 9. UI displays:
    - 🤖 AI Response: "There are 42 students who enrolled after 2020."
    - 📊 Query Results: Table showing `count: 42`
-   - 🔍 Debug: `[Generated SQL] SELECT COUNT(*) FROM students WHERE EXTRACT(YEAR FROM enroll_date) >= 2020`
 
-### Example 2: List Query
+### Example 2: Weather Query with Fuzzy Matching
 
-**User**: "Show me students enrolled in 2023"
-
-**System Processing**:
-1. main.py receives: `"Show me students enrolled in 2023"`
-2. run_function_tool_flow() starts
-3. Queries schema_metadata with business descriptions
-4. LLM (1st call) analyzes: "This is a LIST query with year filter"
-5. LLM generates SQL: `execute_query(sql_query="SELECT id, name, enroll_date FROM students WHERE EXTRACT(YEAR FROM enroll_date) >= 2023 ORDER BY enroll_date LIMIT 100")`
-6. execute_query() validates and executes:
-   - Security check: ✓ SELECT only, no dangerous keywords
-   - Runs query, gets 15 rows
-   - Detects LIST query type (not COUNT)
-7. Returns: `[{"id": 10, "name": "Charlie", "enroll_date": "2023-01-15"}, ...]`
-8. LLM (2nd call) generates: "Here are the students who enrolled in 2023. I found 15 students..."
-9. UI displays:
-   - 🤖 AI Response: Natural language summary
-   - 📊 Query Results: Interactive DataFrame with 15 rows
-
-### Example 3: Complex Query
-
-**User**: "How many active students enrolled before 2022?"
+**User**: "What's the weather like in Beijing?"
 
 **System Processing**:
-1. LLM analyzes schema_metadata: finds `is_active` column with boolean type
-2. LLM generates SQL with multiple conditions:
+1. app.py receives: `"What's the weather like in Beijing?"`
+2. **Phase 1**: Get table summaries → `[students, weather, teacher]`
+3. **Phase 2**: LLM fuzzy match
+   - Analyzes: "weather" keyword + "Beijing" location
+   - Semantic match: weather table
+   - LLM returns: "weather"
+   - Log: `[Table Fuzzy Match] Found 1 relevant tables: weather`
+   - Log: `[Token Optimization] Loading 1/3 tables`
+4. **Phase 3**: Load weather table schema only
+5. **Phase 4**: LLM generates SQL:
    ```sql
-   SELECT COUNT(*) FROM students 
-   WHERE EXTRACT(YEAR FROM enroll_date) < 2022 
-   AND is_active = true
+   SELECT * FROM weather WHERE location = 'Beijing'
    ```
-3. execute_query() validates and executes
-4. Returns contextual response with count
+6. execute_query() executes and returns:
+   ```json
+   [{"id": 1, "location": "Beijing", "date": "2025-12-01", "weather": "Sunny"},
+    {"id": 4, "location": "Beijing", "date": "2025-12-02", "weather": "Snowy"}]
+   ```
+7. **Phase 5**: LLM generates: "In Beijing, the weather was Sunny on 2025-12-01 and Snowy on 2025-12-02."
+8. UI displays natural language summary + weather records table
+
+### Example 3: Teacher Query with Business Concept Matching
+
+**User**: "List professors with over 15 years of experience"
+
+**System Processing**:
+1. **Phase 1**: Get summaries → `[students, weather, teacher]`
+2. **Phase 2**: LLM semantic matching
+   - Analyzes: "professors" (business concept) + "experience" (teaching_years)
+   - Maps: "professors" → teacher table
+   - LLM returns: "teacher"
+   - Log: `[Table Fuzzy Match] Found 1 relevant tables: teacher`
+3. **Phase 3**: Load teacher schema only
+4. **Phase 4**: LLM generates:
+   ```sql
+   SELECT * FROM teacher 
+   WHERE title = 'Professor' AND teach_years > 15 
+   LIMIT 100
+   ```
+5. Returns list of professors with their courses and experience
+6. Display: Natural language + teacher records table
+
+### Example 4: Ambiguous Query with Fallback
+
+**User**: "Show me all the data"
+
+**System Processing**:
+1. **Phase 1**: Get summaries
+2. **Phase 2**: LLM identifies: (empty or unclear)
+   - Log: `[Table Fuzzy Match] Found 0 relevant tables: (none)`
+   - Log: `[Fallback] No tables matched, loading all 3 tables`
+3. **Phase 3**: Load all tables as fallback (safe default)
+4. Continue with SQL generation using all available schemas
 
 ## Advantages of This Architecture
+
+### ✅ **Token Efficiency**
+- **Fuzzy Table Matching**: Identifies relevant tables before loading schemas
+- **70-90% Token Savings**: Only loads necessary table metadata
+- **Scalable**: Handles databases with 50+ tables without token overflow
+- **Smart Fallback**: Loads all tables if identification fails (safe default)
 
 ### ✅ **User Experience**
 - Natural language input (no SQL knowledge required)
@@ -365,6 +565,7 @@ Columns:
 - Visual data tables
 - Handles variations in phrasing automatically
 - Business terminology understanding via metadata
+- Multi-table support (students, weather, teacher)
 
 ### ✅ **Developer Experience**
 - Easy to extend: just add new tables to schema_metadata
@@ -372,6 +573,7 @@ Columns:
 - No need to create new function tools for each table
 - Type-safe with Python type hints
 - Single point of SQL execution and validation
+- Unified LLM calling pattern via `_call_llm_with_fallback()`
 
 ### ✅ **Scalability**
 - Add new tables: just insert metadata, no code changes
@@ -379,13 +581,15 @@ Columns:
 - Support complex queries without predefined patterns
 - LLM adapts to schema changes automatically
 - Multi-table joins possible (just describe relationships in metadata)
+- Token optimization enables large-scale databases
 
 ### ✅ **Maintainability**
 - No regex patterns to maintain
 - No hardcoded SQL (only LLM-generated)
 - Self-documenting via schema_metadata table
 - Comprehensive security validation in one place
-- Clear separation: metadata → LLM → SQL → results
+- Clear separation: summaries → identification → detailed schemas → SQL → results
+- Consistent LLM client wrapper for all API calls
 
 ### ✅ **Security**
 - Centralized SQL validation
