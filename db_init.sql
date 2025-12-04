@@ -38,6 +38,34 @@ INSERT INTO weather (location, date, weather) VALUES
 ('Shanghai', '2025-12-03', 'Rainy'),
 ('Guangzhou', '2025-12-03', 'Sunny');
 
+CREATE TABLE IF NOT EXISTS teacher (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    teach_course VARCHAR(100) NOT NULL,
+    title VARCHAR(50) NOT NULL,
+    teach_years INTEGER NOT NULL
+);
+INSERT INTO teacher (name, teach_course, title, teach_years) VALUES
+('Dr. Alice Johnson', 'Computer Science', 'Professor', 15),
+('Prof. Bob Smith', 'Mathematics', 'Associate Professor', 12),
+('Dr. Carol White', 'Physics', 'Professor', 20),
+('Mr. David Brown', 'English Literature', 'Lecturer', 5),
+('Dr. Emma Davis', 'Chemistry', 'Assistant Professor', 8),
+('Prof. Frank Wilson', 'History', 'Professor', 18),
+('Dr. Grace Lee', 'Biology', 'Associate Professor', 10),
+('Ms. Helen Chen', 'Art', 'Lecturer', 6),
+('Dr. Isaac Martinez', 'Economics', 'Professor', 22),
+('Prof. Julia Garcia', 'Psychology', 'Associate Professor', 14),
+('Dr. Kevin Taylor', 'Computer Science', 'Assistant Professor', 7),
+('Mr. Laura Anderson', 'Music', 'Lecturer', 4),
+('Dr. Michael Thomas', 'Engineering', 'Professor', 25),
+('Prof. Nancy Jackson', 'Philosophy', 'Associate Professor', 11),
+('Dr. Oliver Harris', 'Statistics', 'Assistant Professor', 9),
+('Ms. Patricia Martin', 'Geography', 'Lecturer', 3),
+('Dr. Quinn Robinson', 'Political Science', 'Professor', 16),
+('Prof. Rachel Clark', 'Sociology', 'Associate Professor', 13),
+('Dr. Samuel Lewis', 'Mathematics', 'Professor', 19),
+('Ms. Teresa Walker', 'Physical Education', 'Lecturer', 8);
 
 
 -- Schema metadata table for storing business meanings of tables and columns
@@ -89,6 +117,25 @@ INSERT INTO schema_metadata (
 ('weather', 'location', 'Location', 'Name of the city or region where the weather is observed', 'VARCHAR(100)', FALSE, 'Beijing, Shanghai, Guangzhou'),
 ('weather', 'date', 'Date', 'Date of the weather observation', 'DATE', FALSE, '2025-12-01, 2025-12-02'),
 ('weather', 'weather', 'Weather', 'Description of the weather condition on the given date', 'VARCHAR(50)', FALSE, 'Sunny, Cloudy, Rainy, Snowy')
+ON CONFLICT (table_name, column_name) DO UPDATE 
+SET 
+    business_name = EXCLUDED.business_name,
+    business_description = EXCLUDED.business_description,
+    data_type = EXCLUDED.data_type,
+    is_primary_key = EXCLUDED.is_primary_key,
+    sample_values = EXCLUDED.sample_values,
+    updated_at = CURRENT_TIMESTAMP;
+
+-- Insert metadata for teacher table
+INSERT INTO schema_metadata (
+    table_name, column_name, business_name, business_description, data_type, is_primary_key, sample_values
+) VALUES
+('teacher', NULL, 'Teachers Table', 'Stores faculty information including teaching experience, courses, and academic titles', NULL, FALSE, NULL),
+('teacher', 'id', 'Teacher ID', 'Primary key that uniquely identifies each teacher', 'SERIAL', TRUE, '1, 2, 3'),
+('teacher', 'name', 'Teacher Name', 'Full name of the teacher including academic title prefix', 'VARCHAR(100)', FALSE, 'Dr. Alice Johnson, Prof. Bob Smith, Mr. David Brown'),
+('teacher', 'teach_course', 'Teaching Course', 'Primary course or subject area that the teacher specializes in', 'VARCHAR(100)', FALSE, 'Computer Science, Mathematics, Physics, English Literature'),
+('teacher', 'title', 'Academic Title', 'Academic rank or position of the teacher', 'VARCHAR(50)', FALSE, 'Professor, Associate Professor, Assistant Professor, Lecturer'),
+('teacher', 'teach_years', 'Teaching Years', 'Number of years of teaching experience', 'INTEGER', FALSE, '5, 10, 15, 20')
 ON CONFLICT (table_name, column_name) DO UPDATE 
 SET 
     business_name = EXCLUDED.business_name,

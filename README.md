@@ -302,3 +302,10 @@ This system has evolved from fixed function tools to dynamic SQL generation:
 For more information:
 - [Architecture Documentation](ARCHITECTURE.md)
 
+## DB init after install postgre
+conda activate myenv
+psql -U postgres
+CREATE DATABASE mydb;
+logout:ctrl+Z
+sudo -i -u postgres
+psql -U postgres -d mydb
