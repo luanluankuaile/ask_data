@@ -9,7 +9,7 @@ st.title("Ask Your Data")
 st.write(f"Using `DATABASE_URI`: `{DATABASE_URI}`")
 
 if 'nl_prompt' not in st.session_state:
-    st.session_state['nl_prompt'] = "How many students do you have?"
+    st.session_state['nl_prompt'] = "What data I can ask about?"
 prompt = st.text_input("Enter your question about data you have in database", key='nl_prompt')
 
 if st.button("Generate and Query"):
