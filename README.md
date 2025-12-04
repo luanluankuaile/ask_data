@@ -95,6 +95,7 @@ CREATE DATABASE mydb;
 logout:ctrl+Z
 sudo -i -u postgres
 psql -U postgres -d mydb
+run db_init.sql
 ```
 
 ### Fuzzy Table Matching
