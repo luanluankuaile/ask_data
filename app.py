@@ -3,8 +3,8 @@ import os
 import json
 from query_sql import run_function_tool_flow, DATABASE_URI
 
-st.set_page_config(page_title="Text to SQL", layout="wide")
-st.title("Text to SQL - Multi-Table Query System")
+st.set_page_config(page_title="Ask Data", layout="wide")
+st.title("Ask Your Data")
 
 st.write(f"Using `DATABASE_URI`: `{DATABASE_URI}`")
 
