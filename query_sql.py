@@ -333,10 +333,10 @@ def execute_query(user_prompt: str, sql_query: str):
 def run_function_tool_flow(prompt: str, model: Optional[str] = None):
     """Main workflow function: accepts NL prompt, uses function tool + NL generation to produce results.
     
-    This is the core method called by main.py's Streamlit interface.
+    This is the core method called by app.py's Streamlit interface.
     
     Flow:
-    1. Receives natural language prompt from main.py
+    1. Receives natural language prompt from app.py
     2. First LLM call: Analyze prompt and identify relevant tables
     3. Query schema_metadata only for identified tables (token optimization)
     4. Second LLM call: Generate SQL based on relevant schema
@@ -402,11 +402,7 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
         ]
         
         try:
-            identification_response = client.chat.completions.create(
-                model=model,
-                messages=identification_messages,
-                temperature=0
-            )
+            identification_response = _call_llm_with_fallback(client, identification_messages, model=model)
             identified_tables_str = identification_response.choices[0].message.content.strip()
             
             # Parse identified tables
