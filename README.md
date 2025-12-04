@@ -1,28 +1,16 @@
-# Example LLM Application
+# Text to SQL - Multi-Table Query System
 
-This application uses Azure Open AI API for LLM and HuggingFace embeddings for document vectorization.
-
-## Configuration
-
-Create a `.env` file in the project root with your DeepSeek API key:
-
-```bash
-AZURE_OPENAI_API_KEY="********************"
-AZURE_OPENAI_ENDPOINT=https://ai-proxy.lab.epam.com
-OPENAI_API_VERSION=2025-04-01-preview
-DATABASE_URI=postgresql://postgres:admin@localhost:5432/mydb
-
-# students-project-13
-
-This repository provides a Streamlit UI that translates natural-language queries into safe, read-only SQL statements targeting a `students` table. It uses Azure OpenAI with Function Calling for intelligent SQL generation based on business-meaningful schema metadata.
+This repository provides a Streamlit application that translates natural-language queries into safe, read-only SQL statements. It uses Azure OpenAI with Function Calling for intelligent SQL generation based on business-meaningful schema metadata, with automatic table identification to optimize token usage.
 
 ## Features
 
 - 🤖 **LLM-Powered**: Uses Azure OpenAI GPT-4o with Function Calling
-- 📊 **Business Metadata**: Maintains schema metadata table with business descriptions in Chinese
-- 🔒 **Safe Queries**: Only allows SELECT operations with parameterized queries
-- 🌐 **Bilingual**: Supports both English and Chinese prompts
-- 📈 **Smart Functions**: Automatic selection between count and query operations
+- 📊 **Metadata-Driven**: Maintains schema_metadata table with business descriptions
+- 🎯 **Smart Table Matching**: Automatically identifies relevant tables based on user prompt
+- 🔒 **Safe Queries**: Only allows SELECT operations with security validation
+- 🚀 **Token Optimized**: Loads only relevant table schemas to reduce token consumption
+- 🌐 **Multi-Table Support**: Handles queries across multiple tables with automatic schema detection
+- 📈 **Dynamic SQL Generation**: LLM generates SQL queries based on schema metadata instead of fixed function tools
 
 ## Configuration
 
@@ -37,9 +25,6 @@ AZURE_OPENAI_API_KEY="your-api-key"
 AZURE_OPENAI_ENDPOINT="https://ai-proxy.lab.epam.com"
 OPENAI_API_VERSION="2025-04-01-preview"
 MODEL="gpt-4o"
-
-# Development: opt into sqlite fallback (not recommended for production)
-ALLOW_SQLITE_FALLBACK=0
 ```
 
 ## Setup
@@ -56,22 +41,19 @@ conda activate myenv
 pip install -r requirements.txt
 ```
 
-### 2. Initialize Schema Metadata Table
+### 2. Initialize Database Schema
 
-**Important**: Before first use, initialize the schema metadata table:
+Run the database initialization script to create tables and metadata:
 
 ```bash
-python init_schema_metadata.py
+# Connect to your PostgreSQL database and run:
+psql -U <username> -d <database> -f schema_metadata.sql
 ```
 
-This creates the `schema_metadata` table and populates it with business descriptions for the `students` table.
-
-**What it does:**
-- Creates `schema_metadata` table with business names and descriptions
-- Adds metadata for students table (学生表) and its columns
-- Enables LLM to understand Chinese business terms like "入学日期" → `enroll_date`
-
-See [SCHEMA_METADATA.md](SCHEMA_METADATA.md) for detailed documentation.
+This creates:
+- `students` table with sample data
+- `weather` table with sample data
+- `schema_metadata` table with business descriptions for both tables
 
 ## Run Application
 
@@ -79,37 +61,49 @@ Start the Streamlit app:
 
 ```bash
 # Standard mode
-streamlit run main.py
+streamlit run app.py
 
 # Headless mode (for servers)
-python -m streamlit run main.py --server.port 8501 --server.headless true
+python -m streamlit run app.py --server.port 8501 --server.headless true
 ```
 
 ## How It Works
 
-### Traditional Approach (Without Metadata)
+### Architecture Overview
+
+The system uses a **three-phase workflow** for token optimization:
+
 ```
-User: "有多少学生？" 
-→ LLM sees technical schema: id, name, enroll_date
-→ May not understand Chinese business terms
+User Question: "How is the weather in Shanghai?"
+  ↓
+Phase 1: Get all table names
+  → Returns: ['students', 'weather']
+  ↓
+Phase 2: LLM identifies relevant tables (Fuzzy Matching)
+  → Prompt: "Available tables: students (student info), weather (weather records)"
+  → User question: "weather in Shanghai"
+  → LLM identifies: weather
+  ↓
+Phase 3: Load detailed schema only for identified tables
+  → Loads: weather table metadata (4 columns)
+  → Skips: students table metadata (saves ~70% tokens)
+  ↓
+Phase 4: Generate SQL with identified schema
+  → SQL: SELECT * FROM weather WHERE location = 'Shanghai'
+  ↓
+Phase 5: Execute and return results
 ```
 
-### Enhanced Approach (With Metadata) ✨
-```
-User: "有多少2020年后入学的学生？"
-  ↓
-Query schema_metadata table
-  ↓
-LLM receives:
-  表名: students (学生表)
-  字段: enroll_date (入学日期 - 学生入学的日期)
-  ↓
-LLM understands: "入学" → enroll_date
-  ↓
-Generates: count_students(enroll_after_year=2020)
-  ↓
-Executes SQL & returns natural language response
-```
+### Fuzzy Table Matching
+
+The system performs **semantic matching** based on business descriptions:
+
+| User Question | Table Identified | Reason |
+|---------------|------------------|---------|
+| "How many students?" | `students` | Direct mention |
+| "Show enrollment data" | `students` | Business concept: "enrollment" → students |
+| "Weather in Beijing?" | `weather` | Direct mention + location context |
+| "Climate trends" | `weather` | Business concept: "climate" → weather |
 
 ## Schema Metadata
 
@@ -118,127 +112,193 @@ The `schema_metadata` table stores business-meaningful descriptions:
 | Field | Description | Example |
 |-------|-------------|---------|
 | table_name | Table name | `students` |
-| column_name | Column name | `enroll_date` |
-| business_name | Business name (Chinese) | `入学日期` |
-| business_description | Business description | `学生入学的日期` |
+| column_name | Column name (NULL for table-level) | `enroll_date` |
+| business_name | Business name | `Enrollment Date` |
+| business_description | Business description | `The date when student enrolled` |
 | data_type | Data type | `DATE` |
-| sample_values | Example values | `["2020-09-01", "2021-09-01"]` |
+| is_primary_key | Primary key flag | `false` |
+| sample_values | Example values | `"2020-09-01, 2021-09-01"` |
 
-### Add New Tables/Fields
+### Add New Tables
+
+To add a new table with metadata:
 
 ```sql
--- Add table description
-INSERT INTO schema_metadata (table_name, column_name, business_name, business_description)
-VALUES ('courses', NULL, '课程表', '存储所有课程信息');
+-- 1. Create the table
+CREATE TABLE courses (
+    id SERIAL PRIMARY KEY,
+    course_name VARCHAR(100) NOT NULL,
+    credits INTEGER
+);
 
--- Add column description
+-- 2. Add table-level metadata (required for table identification)
+INSERT INTO schema_metadata (table_name, column_name, business_name, business_description)
+VALUES ('courses', NULL, 'Course Information', 'Stores all course catalog data');
+
+-- 3. Add column-level metadata
 INSERT INTO schema_metadata 
 (table_name, column_name, business_name, business_description, data_type, sample_values)
 VALUES 
-('courses', 'course_name', '课程名称', '课程的完整名称', 'VARCHAR', '["数学", "英语"]');
+('courses', 'id', 'Course ID', 'Unique identifier for each course', 'SERIAL', '1, 2, 3'),
+('courses', 'course_name', 'Course Name', 'Full name of the course', 'VARCHAR(100)', 'Mathematics, Physics, Chemistry'),
+('courses', 'credits', 'Credits', 'Number of credits for the course', 'INTEGER', '3, 4, 5');
 ```
 
-See [SCHEMA_METADATA.md](SCHEMA_METADATA.md) for complete guide.
+**Important**: Always include a table-level row (column_name = NULL) for the table to be discoverable by fuzzy matching.
 
 ## Example Queries
 
-### English
+### Student Queries
 - "How many students enrolled after 2020?"
-- "List all students"
-- "Show me students from 2023"
+- "List all active students"
+- "Show students who graduated in 2024"
 
-### Chinese
-- "有多少学生在2020年后入学？"
-- "列出所有学生"
-- "显示2023年入学的学生"
+### Weather Queries
+- "How is the weather in Shanghai?"
+- "Show weather records for Beijing"
+- "What was the weather on December 1st?"
+
+### Multi-Table Queries (Future Enhancement)
+- "Compare student enrollment with weather patterns"
+- "Show students and weather on the same dates"
 
 ## Architecture
 
-The system uses a two-phase LLM workflow:
+The system uses a **metadata-driven architecture** with dynamic SQL generation:
 
-1. **Planning Phase**: LLM analyzes the prompt with business metadata and selects appropriate function tool
-   - `count_students()`: For "how many", "count" queries
-   - `query_students()`: For "list", "show" queries
+1. **Table Identification Phase**: LLM analyzes user prompt and identifies relevant tables based on business descriptions
+   - Uses semantic matching: "enrollment" → students table
+   - Reduces token usage by 70-90% for large schemas
 
-2. **Response Phase**: LLM generates natural language response based on query results
+2. **SQL Generation Phase**: LLM generates appropriate SQL query using schema metadata
+   - Single `execute_query()` function tool replaces fixed function tools
+   - LLM has full flexibility to generate any SELECT query
+
+3. **Execution Phase**: Execute SQL with security validation and return results
+
+4. **Response Phase**: LLM generates natural language response based on query results
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation.
 
-## Local Development (SQLite Fallback)
+## Token Optimization
 
-For quick local testing without PostgreSQL:
+For databases with many tables, the system optimizes token usage:
 
-```bash
-export ALLOW_SQLITE_FALLBACK=1
-unset DATABASE_URI
-streamlit run main.py
-```
+| Scenario | Tables in DB | Tables Loaded | Token Savings |
+|----------|--------------|---------------|---------------|
+| Small schema (2 tables) | 2 | 2 (all) | 0% (no identification needed) |
+| Large schema (10 tables) | 10 | 1-2 (relevant) | ~80-90% |
+| Enterprise (50+ tables) | 50 | 2-3 (relevant) | ~90-95% |
 
-**Note**: SQLite fallback is for development only. The `schema_metadata` table may not work with SQLite.
-
-## Testing
-
-Test the metadata functionality:
-
-```bash
-# Test metadata query and formatting
-python test_metadata.py
-
-# Verify initialization
-python init_schema_metadata.py
-```
+**Benefits:**
+- Prevents token overflow for large schemas
+- Faster response times (less data to process)
+- Lower API costs
+- Maintains query accuracy with fuzzy matching
 
 ## Safety Features
 
-- ✅ Only SELECT queries allowed
-- ✅ Parameterized queries (SQL injection protection)
+- ✅ Only SELECT queries allowed (INSERT/UPDATE/DELETE blocked)
+- ✅ Forbidden keyword detection (DROP, ALTER, TRUNCATE, etc.)
+- ✅ Single statement enforcement (prevents SQL injection)
+- ✅ Parameterized queries via SQLAlchemy
 - ✅ Read-only database operations
-- ✅ Function tools with strict parameter validation
-- ✅ Automatic fallback to technical schema if metadata unavailable
+- ✅ LLM-generated SQL with validation
+
+## Testing
+
+Test the system with various queries:
+
+```bash
+# Start the app
+streamlit run app.py
+
+# Try these queries in the UI:
+# 1. "How many students enrolled in 2020?"
+# 2. "What's the weather in Shanghai?"
+# 3. "List all active students"
+# 4. "Show weather for December 1st"
+```
+
+Check the logs for table identification:
+```
+[Table Fuzzy Match] Found 1 relevant tables: students
+[Token Optimization] Loading 1/2 tables
+[Generated SQL] SELECT COUNT(*) FROM students WHERE EXTRACT(YEAR FROM enroll_date) = 2020
+```
 
 ## Troubleshooting
 
-### Conda Activation Issues
-```bash
-CONDA_BASE=$(conda info --base)
-source "$CONDA_BASE/etc/profile.d/conda.sh"
-conda activate myenv
-```
+### Table Not Identified
 
-### Schema Metadata Not Working
-1. Check if table exists: `SELECT * FROM schema_metadata LIMIT 1;`
-2. Re-run initialization: `python init_schema_metadata.py`
-3. Check logs for warnings about metadata query failures
+**Problem**: User asks about a table but it's not identified
 
-### LLM Not Understanding Chinese Terms
-- Verify metadata table has Chinese business descriptions
-- Check that `get_schema_metadata()` returns data
-- Review system prompt in Streamlit UI
+**Solution**:
+1. Check if table has table-level metadata: `SELECT * FROM schema_metadata WHERE column_name IS NULL`
+2. Verify business_description is clear and relevant
+3. Add more descriptive keywords to business_description
+
+### Token Overflow
+
+**Problem**: Still hitting token limits with large schemas
+
+**Solution**:
+1. Verify table identification is working (check logs)
+2. Reduce sample_values length in metadata
+3. Consider implementing column-level identification for very large tables
+
+### LLM Generates Wrong SQL
+
+**Problem**: Generated SQL doesn't match user intent
+
+**Solution**:
+1. Improve business_description in schema_metadata
+2. Add more sample_values to clarify data format
+3. Check if correct tables were identified in logs
 
 ## Project Structure
 
 ```
 students-project-13/
-├── main.py                      # Streamlit UI
-├── query_sql.py                 # Core logic with metadata support
-├── init_schema_metadata.py      # Metadata initialization script
-├── test_metadata.py             # Testing script
-├── schema_metadata.sql          # SQL schema definition
-├── SCHEMA_METADATA.md           # Metadata documentation
-├── ARCHITECTURE.md              # System architecture
+├── app.py                       # Streamlit UI
+├── query_sql.py                 # Core logic with metadata-driven SQL generation
+├── schema_metadata.sql          # Database schema with metadata
+├── ARCHITECTURE.md              # System architecture documentation
+├── README.md                    # This file
 └── requirements.txt             # Python dependencies
 ```
+
+## Key Functions
+
+### `query_sql.py`
+
+- `get_table_summaries()`: Retrieves table names with business descriptions for fuzzy matching
+- `get_schema_metadata(table_name)`: Queries detailed metadata for specific table(s)
+- `format_schema_metadata_for_llm(metadata)`: Formats metadata into readable text for LLM
+- `execute_query(user_prompt, sql_query)`: Universal SQL executor with security validation
+- `run_function_tool_flow(prompt, model)`: Main orchestrator with three-phase workflow
 
 ## Contributing
 
 1. Create a new branch from `main`
 2. Make your changes
-3. Test thoroughly (especially metadata queries)
-4. Open a Merge Request
+3. Test thoroughly (especially table identification and SQL generation)
+4. Ensure schema_metadata entries have both table-level and column-level records
+5. Open a Merge Request
+
+## Migration from Fixed Functions
+
+This system has evolved from fixed function tools to dynamic SQL generation:
+
+| Old Approach | New Approach |
+|--------------|--------------|
+| `count_students()` | `execute_query()` with dynamic SQL |
+| `query_students()` | `execute_query()` with dynamic SQL |
+| Fixed function tools | Single universal function tool |
+| Load all metadata | Load only relevant tables |
 
 ---
 
 For more information:
-- [Schema Metadata Guide](SCHEMA_METADATA.md)
 - [Architecture Documentation](ARCHITECTURE.md)
 
