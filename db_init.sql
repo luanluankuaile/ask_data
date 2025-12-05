@@ -67,6 +67,35 @@ INSERT INTO teacher (name, teach_course, title, teach_years) VALUES
 ('Dr. Samuel Lewis', 'Mathematics', 'Professor', 19),
 ('Ms. Teresa Walker', 'Physical Education', 'Lecturer', 8);
 
+CREATE TABLE IF NOT EXISTS class (
+    id SERIAL PRIMARY KEY,
+    class_name VARCHAR(100) NOT NULL,
+    grade INTEGER NOT NULL,
+    course VARCHAR(100) NOT NULL,
+    teacher_id INTEGER,
+    student_id VARCHAR,
+    is_active BOOLEAN DEFAULT TRUE,
+    CONSTRAINT fk_teacher FOREIGN KEY (teacher_id) REFERENCES teacher(id),
+    CONSTRAINT fk_student FOREIGN KEY (student_id) REFERENCES students(id)
+);
+
+INSERT INTO class (class_name, grade, course, teacher_id, student_id, is_active) VALUES
+('CS101-A', 1, 'Computer Science', 1, '10001', TRUE),
+('CS101-A', 1, 'Computer Science', 1, '10002', TRUE),
+('CS101-B', 1, 'Computer Science', 11, '10004', TRUE),
+('MATH201-A', 2, 'Mathematics', 2, '10006', TRUE),
+('MATH201-A', 2, 'Mathematics', 2, '10007', TRUE),
+('MATH201-B', 2, 'Mathematics', 19, '10009', TRUE),
+('PHY301-A', 3, 'Physics', 3, '10003', FALSE),
+('ENG101-A', 1, 'English Literature', 4, '10001', TRUE),
+('CHEM201-A', 2, 'Chemistry', 5, '10002', TRUE),
+('HIST101-A', 1, 'History', 6, '10004', TRUE),
+('BIO201-A', 2, 'Biology', 7, '10006', TRUE),
+('ART101-A', 1, 'Art', 8, '10007', TRUE),
+('ECON301-A', 3, 'Economics', 9, '10008', FALSE),
+('PSY201-A', 2, 'Psychology', 10, '10009', TRUE),
+('ENG401-A', 4, 'Engineering', 13, '10010', FALSE);
+
 
 -- Schema metadata table for storing business meanings of tables and columns
 -- This table helps LLM understand the business context when generating SQL
@@ -142,5 +171,28 @@ SET
     business_description = EXCLUDED.business_description,
     data_type = EXCLUDED.data_type,
     is_primary_key = EXCLUDED.is_primary_key,
+    sample_values = EXCLUDED.sample_values,
+    updated_at = CURRENT_TIMESTAMP;
+
+-- Insert metadata for class table
+INSERT INTO schema_metadata (
+    table_name, column_name, business_name, business_description, data_type, is_primary_key, is_foreign_key, foreign_key_reference, sample_values
+) VALUES
+('class', NULL, 'Class Enrollment Table', 'Stores class enrollment information linking students, teachers, and courses', NULL, FALSE, FALSE, NULL, NULL),
+('class', 'id', 'Class Record ID', 'Primary key that uniquely identifies each class enrollment record', 'SERIAL', TRUE, FALSE, NULL, '1, 2, 3'),
+('class', 'class_name', 'Class Name', 'Name or code of the class section', 'VARCHAR(100)', FALSE, FALSE, NULL, 'CS101-A, MATH201-B, PHY301-A'),
+('class', 'grade', 'Grade Level', 'Grade level of the class (1=Freshman, 2=Sophomore, 3=Junior, 4=Senior)', 'INTEGER', FALSE, FALSE, NULL, '1, 2, 3, 4'),
+('class', 'course', 'Course Name', 'Name of the course or subject being taught', 'VARCHAR(100)', FALSE, FALSE, NULL, 'Computer Science, Mathematics, Physics'),
+('class', 'teacher_id', 'Teacher ID', 'Foreign key reference to the teacher teaching this class', 'INTEGER', FALSE, TRUE, 'teacher.id', '1, 2, 3'),
+('class', 'student_id', 'Student ID', 'Foreign key reference to the student enrolled in this class', 'VARCHAR', FALSE, TRUE, 'students.id', '10001, 10002, 10003'),
+('class', 'is_active', 'Active Status', 'Indicates whether the class enrollment is currently active', 'BOOLEAN', FALSE, FALSE, NULL, 'true, false')
+ON CONFLICT (table_name, column_name) DO UPDATE 
+SET 
+    business_name = EXCLUDED.business_name,
+    business_description = EXCLUDED.business_description,
+    data_type = EXCLUDED.data_type,
+    is_primary_key = EXCLUDED.is_primary_key,
+    is_foreign_key = EXCLUDED.is_foreign_key,
+    foreign_key_reference = EXCLUDED.foreign_key_reference,
     sample_values = EXCLUDED.sample_values,
     updated_at = CURRENT_TIMESTAMP;
