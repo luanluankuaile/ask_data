@@ -1,15 +1,12 @@
-# GitLab CI pipeline for students-project-13
+# GitLab CI pipeline for ask_data
 # - Lint / build (Python) jobs
 # - Docker build and push job (uses Docker-in-Docker)
 # Configure these CI/CD variables in your project settings:
-# - CI_REGISTRY_USER, CI_REGISTRY_PASSWORD (for docker login) OR use GitLab's built-in CI registry variables
-# - IMAGE_REPOSITORY (optional) to override image destination
+# - CI_REGISTRY_USER, CI_REGISTRY_PASSWORD (for docker login)
 
 variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
-  IMAGE_REPOSITORY: "${IMAGE_REPOSITORY:-epmgptsemanticsearch.azurecr.io/students-project-13}"
-  IMAGE_TAG: "${CI_COMMIT_SHORT_SHA}"
-  IMAGE_NAME: "$IMAGE_REPOSITORY:$IMAGE_TAG"
+  DOCKER_IMAGE_TAG: "${CI_COMMIT_SHORT_SHA}"
 
 stages:
   - lint
@@ -39,38 +36,15 @@ build-python:
     - branches
 
 docker-build-and-push:
-  image: docker:24
-  services:
-    - docker:dind
   stage: docker
-  variables:
-    DOCKER_HOST: tcp://docker:2375/
-    DOCKER_TLS_CERTDIR: ""
-  before_script:
-    - echo "Logging into registry..."
-    # Prefer using CI-provided variables (CI_REGISTRY, CI_REGISTRY_USER, CI_REGISTRY_PASSWORD)
-    - if [ -n "$CI_REGISTRY" ]; then REGISTRY="$CI_REGISTRY"; else REGISTRY="${IMAGE_REPOSITORY%%/*}"; fi
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$REGISTRY"
-  script:
-    - docker build -t "$IMAGE_NAME" .
-    - docker push "$IMAGE_NAME"
-  only:
-    - main
----
-variables:
-  DOCKER_IMAGE_NAME: "students-project-13"
-  DOCKER_IMAGE_TAG: "${CI_COMMIT_SHORT_SHA}"
-
-stages:
-  - build
-  # - deploy  # Uncomment if you have Helm chart and Kubernetes access
-
-build:
-  stage: build
   image: docker:latest
   services:
     - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
   before_script:
+    - echo "Logging into GitLab Container Registry..."
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
   script:
     - echo "Building Docker image..."
@@ -80,6 +54,3 @@ build:
     - docker push $CI_REGISTRY_IMAGE:latest
   only:
     - main
-  # Remove tags to use any available runner, or specify the correct tag for your runner
-  # tags:
-  #   - docker
