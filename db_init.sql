@@ -184,7 +184,7 @@ CREATE TABLE IF NOT EXISTS schema_metadata (
 -- Insert metadata for students table
 INSERT INTO schema_metadata (table_name, column_name, business_name, business_description, data_type, is_primary_key, is_foreign_key, foreign_key_reference, sample_values) 
 VALUES 
-    ('student', NULL, 'Students Table', 'Stores all student basic information and class assignment', NULL, FALSE, FALSE, NULL, NULL),
+    ('student', NULL, 'Students Table', 'Stores all student basic information and class assignment. Each student belongs to one class (student.class_id -> class.id). Students can enroll in multiple courses via course_enrollment table.', NULL, FALSE, FALSE, NULL, NULL),
     ('student', 'id', 'Student ID', 'Unique identifier for each student, primary key', 'VARCHAR', TRUE, FALSE, NULL, '["10001", "10002", "10003"]'),
     ('student', 'name', 'Student Name', 'Full name of the student', 'TEXT', FALSE, FALSE, NULL, '["Tom", "Alice", "Bob"]'),
     ('student', 'class_id', 'Class ID', 'Foreign key reference to the class the student belongs to', 'INTEGER', FALSE, TRUE, 'class.id', '["1", "2", "3"]'),
@@ -228,7 +228,7 @@ SET
 INSERT INTO schema_metadata (
     table_name, column_name, business_name, business_description, data_type, is_primary_key, is_foreign_key, foreign_key_reference, sample_values
 ) VALUES
-('class', NULL, 'Class Table', 'Stores class information organized by grade level with assigned homeroom teachers', NULL, FALSE, FALSE, NULL, NULL),
+('class', NULL, 'Class Table', 'Stores class information organized by grade level with assigned homeroom teachers. JOIN with student table via student.class_id = class.id to get students in a class. JOIN with teacher table via class.homeroom_teacher_id = teacher.id to get homeroom teacher.', NULL, FALSE, FALSE, NULL, NULL),
 ('class', 'id', 'Class ID', 'Primary key that uniquely identifies each class', 'SERIAL', TRUE, FALSE, NULL, '1, 2, 3'),
 ('class', 'class_name', 'Class Name', 'Name of the class (e.g., Grade1-ClassA)', 'VARCHAR(100)', FALSE, FALSE, NULL, 'Grade1-ClassA, Grade2-ClassB, Grade3-ClassA'),
 ('class', 'grade', 'Grade Level', 'Grade level of the class (1=Freshman, 2=Sophomore, 3=Junior, 4=Senior)', 'INTEGER', FALSE, FALSE, NULL, '1, 2, 3, 4'),
@@ -249,7 +249,7 @@ SET
 INSERT INTO schema_metadata (
     table_name, column_name, business_name, business_description, data_type, is_primary_key, sample_values
 ) VALUES
-('course', NULL, 'Course Table', 'Stores all available courses with department and credit information', NULL, FALSE, NULL),
+('course', NULL, 'Course Table', 'Stores all available courses with department and credit information. JOIN with course_enrollment table via course_enrollment.course_id = course.id to get students enrolled in a course.', NULL, FALSE, NULL),
 ('course', 'id', 'Course ID', 'Primary key that uniquely identifies each course', 'SERIAL', TRUE, '1, 2, 3'),
 ('course', 'course_code', 'Course Code', 'Unique code identifier for the course (e.g., CS101, MATH201)', 'VARCHAR(50)', FALSE, 'CS101, MATH101, PHY101'),
 ('course', 'course_name', 'Course Name', 'Full name of the course', 'VARCHAR(100)', FALSE, 'Introduction to Computer Science, Calculus I, Physics I'),
@@ -269,7 +269,7 @@ SET
 INSERT INTO schema_metadata (
     table_name, column_name, business_name, business_description, data_type, is_primary_key, is_foreign_key, foreign_key_reference, sample_values
 ) VALUES
-('course_enrollment', NULL, 'Course Enrollment Table', 'Stores student course selections with teacher assignments, grades and scores', NULL, FALSE, FALSE, NULL, NULL),
+('course_enrollment', NULL, 'Course Enrollment Table', 'Stores student course selections with teacher assignments, grades and scores. This is a junction table connecting students to courses. JOIN with student via course_enrollment.student_id = student.id, JOIN with course via course_enrollment.course_id = course.id, JOIN with teacher via course_enrollment.teacher_id = teacher.id to get complete enrollment information.', NULL, FALSE, FALSE, NULL, NULL),
 ('course_enrollment', 'id', 'Enrollment ID', 'Primary key that uniquely identifies each course enrollment record', 'SERIAL', TRUE, FALSE, NULL, '1, 2, 3'),
 ('course_enrollment', 'student_id', 'Student ID', 'Foreign key reference to the student taking the course', 'VARCHAR', FALSE, TRUE, 'students.id', '10001, 10002, 10003'),
 ('course_enrollment', 'course_id', 'Course ID', 'Foreign key reference to the course being taken', 'INTEGER', FALSE, TRUE, 'course.id', '1, 2, 3'),
