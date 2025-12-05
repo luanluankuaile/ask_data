@@ -18,7 +18,7 @@ with col1:
                            placeholder="What data can I ask about?",
                            label_visibility="visible")
 with col2:
-    st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-top: 29px;'></div>", unsafe_allow_html=True)
     submit_clicked = st.button("➜", help="Submit your question")
 
 if submit_clicked:
