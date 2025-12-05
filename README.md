@@ -1,4 +1,4 @@
-# Text to SQL - Multi-Table Query System
+# Text to SQL - Student Management Query System
 
 This repository provides a Streamlit application that translates natural-language queries into safe, read-only SQL statements. It uses Azure OpenAI with Function Calling for intelligent SQL generation based on business-meaningful schema metadata, with automatic table identification to optimize token usage.
 
@@ -9,8 +9,9 @@ This repository provides a Streamlit application that translates natural-languag
 - 🎯 **Smart Table Matching**: Automatically identifies relevant tables based on user prompt
 - 🔒 **Safe Queries**: Only allows SELECT operations with security validation
 - 🚀 **Token Optimized**: Loads only relevant table schemas to reduce token consumption
-- 🌐 **Multi-Table Support**: Handles queries across multiple tables with automatic schema detection
+- 🌐 **Multi-Table Support**: Handles complex queries across students, classes, teachers, courses, and enrollments
 - 📈 **Dynamic SQL Generation**: LLM generates SQL queries based on schema metadata instead of fixed function tools
+- 🔗 **Relational Queries**: Supports JOIN operations between related tables
 
 ## Configuration
 
@@ -41,12 +42,10 @@ Run the database initialization script to create tables and metadata:
 ### DB init after install postgre
 ```bash
 conda activate myenv
-psql -U postgres
-CREATE DATABASE mydb;
-logout:ctrl+Z
 sudo -i -u postgres
 psql -U postgres -d mydb
-run db_init.sql
+CREATE DATABASE mydb;
+run sql in db_init.sql
 ```
 
 ```bash
@@ -55,10 +54,12 @@ psql -U <username> -d <database> -f db_init.sql
 ```
 
 This creates:
-- `students` table with sample data
-- `weather` table with sample data
-- `teacher` table with sample data
-- `schema_metadata` table with business descriptions for both tables
+- `class` table - Class information organized by grade
+- `students` table - 20 students assigned to different classes
+- `teacher` table - 20 teachers with various specializations
+- `course` table - 15 courses across different departments
+- `course_enrollment` table - Student course selections with grades and scores
+- `schema_metadata` table - Business descriptions for all tables and columns
 
 ## Run Application
 
@@ -79,22 +80,24 @@ python -m streamlit run app.py --server.port 8501 --server.headless true
 The system uses a **three-phase workflow** for token optimization:
 
 ```
-User Question: "How is the weather in Shanghai?"
+User Question: "How many students in Grade 1 enrolled in Computer Science courses?"
   ↓
 Phase 1: Get all table names
-  → Returns: ['students', 'weather']
+  → Returns: ['students', 'class', 'teacher', 'course', 'course_enrollment']
   ↓
 Phase 2: LLM identifies relevant tables (Fuzzy Matching)
-  → Prompt: "Available tables: students (student info), weather (weather records)"
-  → User question: "weather in Shanghai"
-  → LLM identifies: weather
+  → Prompt: "Available tables: students, class, course, course_enrollment..."
+  → User question: mentions students, grade, courses
+  → LLM identifies: students, course, course_enrollment
   ↓
 Phase 3: Load detailed schema only for identified tables
-  → Loads: weather table metadata (4 columns)
-  → Skips: students table metadata (saves ~70% tokens)
+  → Loads: 3 table schemas with metadata
+  → Skips: class, teacher tables (saves ~40% tokens)
   ↓
 Phase 4: Generate SQL with identified schema
-  → SQL: SELECT * FROM weather WHERE location = 'Shanghai'
+  → SQL: SELECT COUNT(DISTINCT ce.student_id) FROM course_enrollment ce 
+          JOIN course c ON ce.course_id = c.id 
+          WHERE ce.grade = 1 AND c.department = 'Computer Science'
   ↓
 Phase 5: Execute and return results
 ```
@@ -104,11 +107,11 @@ Phase 5: Execute and return results
 The system performs **semantic matching** based on business descriptions:
 
 | User Question | Table Identified | Reason |
-|---------------|------------------|---------|
-| "How many students?" | `students` | Direct mention |
-| "Show enrollment data" | `students` | Business concept: "enrollment" → students |
-| "Weather in Beijing?" | `weather` | Direct mention + location context |
-| "Climate trends" | `weather` | Business concept: "climate" → weather |
+|---------------|------------------|---------||
+| "How many students in Grade 1?" | `students`, `class` | Direct mention + grade reference |
+| "Which courses did Tom take?" | `students`, `course`, `course_enrollment` | Student name + course concept |
+| "Teachers teaching Math" | `teacher`, `course` | Subject reference |
+| "Average score in Computer Science" | `course`, `course_enrollment` | Course name + grade concept |
 
 ## Schema Metadata
 
@@ -154,18 +157,26 @@ VALUES
 ## Example Queries
 
 ### Student Queries
-- "How many students enrolled after 2020?"
-- "List all active students"
-- "Show students who graduated in 2024"
+- "How many students are in Grade1-ClassA?"
+- "List all active students enrolled after 2020"
+- "Show students who will graduate in 2024"
+- "Which class does Tom belong to?"
 
-### Weather Queries
-- "How is the weather in Shanghai?"
-- "Show weather records for Beijing"
-- "What was the weather on December 1st?"
+### Course Queries
+- "How many students enrolled in Computer Science courses?"
+- "What courses are offered by the Mathematics department?"
+- "Show all courses with 4 credits"
 
-### Multi-Table Queries (Future Enhancement)
-- "Compare student enrollment with weather patterns"
-- "Show students and weather on the same dates"
+### Teacher Queries
+- "Which teachers are Professors?"
+- "Who is the homeroom teacher of Grade2-ClassA?"
+- "List all teachers teaching Computer Science"
+
+### Complex Multi-Table Queries
+- "Which students in Grade 1 took courses taught by Dr. Alice Johnson?"
+- "Show the average number of courses per student by grade"
+- "List all courses taken by students in Grade1-ClassA"
+- "How many students did each teacher teach in 2023-Fall semester?"
 
 ## Architecture
 
@@ -191,8 +202,9 @@ For databases with many tables, the system optimizes token usage:
 
 | Scenario | Tables in DB | Tables Loaded | Token Savings |
 |----------|--------------|---------------|---------------|
-| Small schema (2 tables) | 2 | 2 (all) | 0% (no identification needed) |
-| Large schema (10 tables) | 10 | 1-2 (relevant) | ~80-90% |
+| Simple query ("How many students?") | 5 | 1 (students) | ~80% |
+| Medium query ("Students in CS courses") | 5 | 3 (students, course, course_enrollment) | ~40% |
+| Complex query ("All data") | 5 | 5 (all tables) | 0% |
 | Enterprise (50+ tables) | 50 | 2-3 (relevant) | ~90-95% |
 
 **Benefits:**
@@ -222,9 +234,9 @@ streamlit run app.py
 
 Check the logs for table identification:
 ```
-[Table Fuzzy Match] Found 1 relevant tables: students
-[Token Optimization] Loading 1/2 tables
-[Generated SQL] SELECT COUNT(*) FROM students WHERE EXTRACT(YEAR FROM enroll_date) = 2020
+[Table Fuzzy Match] Found 2 relevant tables: students, class
+[Token Optimization] Loading 2/5 tables
+[Generated SQL] SELECT COUNT(*) FROM students s JOIN class c ON s.class_id = c.id WHERE c.grade = 1
 ```
 
 ## Troubleshooting
