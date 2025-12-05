@@ -38,6 +38,17 @@ pip install -r requirements.txt
 
 Run the database initialization script to create tables and metadata:
 
+### DB init after install postgre
+```bash
+conda activate myenv
+psql -U postgres
+CREATE DATABASE mydb;
+logout:ctrl+Z
+sudo -i -u postgres
+psql -U postgres -d mydb
+run db_init.sql
+```
+
 ```bash
 # Connect to your PostgreSQL database and run:
 psql -U <username> -d <database> -f db_init.sql
@@ -86,16 +97,6 @@ Phase 4: Generate SQL with identified schema
   → SQL: SELECT * FROM weather WHERE location = 'Shanghai'
   ↓
 Phase 5: Execute and return results
-```
-### DB init after install postgre
-```bash
-conda activate myenv
-psql -U postgres
-CREATE DATABASE mydb;
-logout:ctrl+Z
-sudo -i -u postgres
-psql -U postgres -d mydb
-run db_init.sql
 ```
 
 ### Fuzzy Table Matching
