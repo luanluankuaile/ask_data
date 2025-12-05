@@ -1,4 +1,4 @@
--- Class table: stores class information (班级信息表)
+-- Class table: stores class information
 CREATE TABLE IF NOT EXISTS class (
     id SERIAL PRIMARY KEY,
     class_name VARCHAR(100) NOT NULL UNIQUE,
@@ -16,7 +16,7 @@ INSERT INTO class (class_name, grade, homeroom_teacher_id, is_active) VALUES
 ('Grade3-ClassB', 3, 9, TRUE),
 ('Grade4-ClassA', 4, 13, TRUE);
 
--- Students table with class_id (学生表，绑定班级)
+-- Student table with class_id
 CREATE TABLE IF NOT EXISTS student
 (
     id character varying COLLATE pg_catalog."default" NOT NULL,
@@ -80,7 +80,7 @@ INSERT INTO teacher (name, teach_course, title, teach_years) VALUES
 ('Dr. Samuel Lewis', 'Mathematics', 'Professor', 19),
 ('Ms. Teresa Walker', 'Physical Education', 'Lecturer', 8);
 
--- Course table: stores course information (课程信息表)
+-- Course table: stores course information 
 CREATE TABLE IF NOT EXISTS course (
     id SERIAL PRIMARY KEY,
     course_code VARCHAR(50) NOT NULL UNIQUE,
@@ -107,7 +107,7 @@ INSERT INTO course (course_code, course_name, credits, department, is_active) VA
 ('PSY101', 'Introduction to Psychology', 3, 'Psychology', TRUE),
 ('PE101', 'Physical Education', 1, 'Physical Education', TRUE);
 
--- Course enrollment table: students select courses (学生选课表，多对多关系)
+-- Course enrollment table: student select courses
 CREATE TABLE IF NOT EXISTS course_enrollment (
     id SERIAL PRIMARY KEY,
     student_id VARCHAR NOT NULL,
@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS course_enrollment (
     enrollment_date DATE DEFAULT CURRENT_DATE,
     score VARCHAR(5),
     is_active BOOLEAN DEFAULT TRUE,
-    CONSTRAINT fk_course_enrollment_student FOREIGN KEY (student_id) REFERENCES students(id),
+    CONSTRAINT fk_course_enrollment_student FOREIGN KEY (student_id) REFERENCES student(id),
     CONSTRAINT fk_course_enrollment_course FOREIGN KEY (course_id) REFERENCES course(id),
     CONSTRAINT fk_course_enrollment_teacher FOREIGN KEY (teacher_id) REFERENCES teacher(id),
     CONSTRAINT unique_student_course_semester UNIQUE(student_id, course_id, semester)
