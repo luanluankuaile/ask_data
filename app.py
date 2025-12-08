@@ -10,18 +10,23 @@ st.write(f"Using `DATABASE_URI`: `{DATABASE_URI}`")
 
 if 'nl_prompt' not in st.session_state:
     st.session_state['nl_prompt'] = ""
+if 'submit_trigger' not in st.session_state:
+    st.session_state['submit_trigger'] = False
 
 col1, col2 = st.columns([9, 1])
 with col1:
     prompt = st.text_input("Enter your question about data you have in database", 
                            key='nl_prompt',
                            placeholder="What data can I ask about?",
-                           label_visibility="visible")
+                           label_visibility="visible",
+                           on_change=lambda: st.session_state.update({'submit_trigger': True}))
 with col2:
     st.markdown("<div style='margin-top: 29px;'></div>", unsafe_allow_html=True)
     submit_clicked = st.button("➜", help="Submit your question")
 
-if submit_clicked:
+if submit_clicked or st.session_state.get('submit_trigger', False):
+    if st.session_state.get('submit_trigger', False):
+        st.session_state['submit_trigger'] = False
     try:
         # Main workflow: main.py receives prompt → run_function_tool_flow (uses function_tool + NL generation) → display results
         assistant_text, tool_output = run_function_tool_flow(prompt)
