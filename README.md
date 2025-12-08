@@ -1,10 +1,11 @@
 # Text to SQL - Student Management Query System
 
-This repository provides a Streamlit application that translates natural-language queries into safe, read-only SQL statements. It uses Azure OpenAI with Function Calling for intelligent SQL generation based on business-meaningful schema metadata, with automatic table identification to optimize token usage.
+This repository provides a Streamlit application that translates natural-language queries into safe, read-only SQL statements. It uses LLM (Azure OpenAI or Deepseek) with Function Calling for intelligent SQL generation based on business-meaningful schema metadata, with automatic table identification to optimize token usage.
 
 ## Features
 
-- 🤖 **LLM-Powered**: Uses Azure OpenAI GPT-4o with Function Calling
+- 🤖 **LLM-Powered**: Supports Azure OpenAI GPT-4o and Deepseek with Function Calling
+- 🔄 **Dual Provider**: Switch between Azure OpenAI and Deepseek via environment variable
 - 📊 **Metadata-Driven**: Maintains schema_metadata table with business descriptions
 - 🎯 **Smart Table Matching**: Automatically identifies relevant tables based on user prompt
 - 🔒 **Safe Queries**: Only allows SELECT operations with security validation
@@ -12,19 +13,51 @@ This repository provides a Streamlit application that translates natural-languag
 - 🌐 **Multi-Table Support**: Handles complex queries across students, classes, teachers, courses, and enrollments
 - 📈 **Dynamic SQL Generation**: LLM generates SQL queries based on schema metadata instead of fixed function tools
 - 🔗 **Relational Queries**: Supports JOIN operations between related tables
+- 🛡️ **Robust Error Handling**: Network error detection and graceful fallback
 
 ## Configuration
 
 Create a `.env` file in the project root with the following variables:
 
+### Azure OpenAI (Default)
+
 ```bash
 # Database connection (PostgreSQL recommended)
-AZURE_OPENAI_API_KEY="your-api-key"
-AZURE_OPENAI_ENDPOINT="your-endpoint"
-OPENAI_API_VERSION="open-api-version"
-MODEL="model-name" # e.g., gpt-4o
 DATABASE_URI="postgresql://<user>:<pass>@<host>:<port>/<db>"
+
+# LLM Provider: azure (default) or deepseek
+LLM_PROVIDER=azure
+
+# Azure OpenAI Configuration
+AZURE_OPENAI_API_KEY="your-api-key"
+AZURE_OPENAI_ENDPOINT="https://ai-proxy.lab.epam.com"
+OPENAI_API_VERSION="2025-04-01-preview"
+MODEL="gpt-4o"
 ```
+
+### Deepseek Alternative
+
+```bash
+# Database connection
+DATABASE_URI="postgresql://<user>:<pass>@<host>:<port>/<db>"
+
+# LLM Provider
+LLM_PROVIDER=deepseek
+
+# Deepseek Configuration
+DEEPSEEK_ENDPOINT="https://api.deepseek.com"
+DEEPSEEK_API_KEY="sk-xxxxxxxxxxxxx"
+DEEPSEEK_MODEL="deepseek-chat"
+DEBUG_DEEPSEEK=0  # Set to 1 for detailed logging
+```
+
+### Switching Providers
+
+Simply change `LLM_PROVIDER` in `.env` and restart the application:
+- `LLM_PROVIDER=azure` - Use Azure OpenAI
+- `LLM_PROVIDER=deepseek` - Use Deepseek
+
+No code changes required!
 
 ## Setup
 

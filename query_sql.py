@@ -2,9 +2,74 @@ from langchain_community.llms import AzureOpenAI
 from langchain.sql_database import SQLDatabase
 from dotenv import load_dotenv
 import os
+import requests
 from sqlalchemy import create_engine, text
 import json
 from typing import Optional
+
+
+
+# --- Normalization helpers (module-level) ---------------------------------
+class NormalizedMessage:
+    def __init__(self, content=None, raw=None, tool_calls=None):
+        self.content = content
+        self.raw = raw
+        self.tool_calls = tool_calls
+
+
+class NormalizedChoice:
+    def __init__(self, message: NormalizedMessage):
+        self.message = message
+
+
+class NormalizedResponse:
+    def __init__(self, choices: list[NormalizedChoice]):
+        self.choices = choices
+
+
+def _normalize_llm_dict_response(data: dict) -> NormalizedResponse:
+    """Convert a raw LLM JSON dict into a NormalizedResponse object.
+
+    Preserves `tool_calls` when present inside choice.message.tool_calls.
+    """
+    def _build_tool_calls(raw_tc):
+        out = []
+        for tc in (raw_tc or []):
+            func = tc.get('function') or {}
+            class FuncObj:
+                def __init__(self, name, arguments):
+                    self.name = name
+                    self.arguments = arguments
+
+            class ToolCall:
+                def __init__(self, tid, ttype, funcobj):
+                    self.id = tid
+                    self.type = ttype
+                    self.function = funcobj
+
+            funcobj = FuncObj(func.get('name'), func.get('arguments'))
+            out.append(ToolCall(tc.get('id'), tc.get('type'), funcobj))
+        return out if out else None
+
+    choices = []
+    try:
+        for ch in data.get('choices', []):
+            # support both structure where message is under 'message' or directly in 'text'
+            msg = ch.get('message') or {}
+            content = msg.get('content') or ch.get('text') or ch.get('message', {}).get('content')
+            raw_tc = msg.get('tool_calls') if isinstance(msg, dict) else None
+            tool_calls = _build_tool_calls(raw_tc)
+            nm = NormalizedMessage(content=content, raw=ch, tool_calls=tool_calls)
+            choices.append(NormalizedChoice(nm))
+    except Exception:
+        choices = [NormalizedChoice(NormalizedMessage(content=str(data), raw=data))]
+
+    return NormalizedResponse(choices)
+
+
+def _wrap_text_response(text: str) -> NormalizedResponse:
+    """Wrap a plain text string into a NormalizedResponse-like object."""
+    return NormalizedResponse([NormalizedChoice(NormalizedMessage(content=text))])
 
 
 load_dotenv()
@@ -25,10 +90,15 @@ except Exception as e:
 
 
 # Azure OpenAI Configuration
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "azure").lower()
 AZURE_KEY = os.environ.get("AZURE_OPENAI_API_KEY")
 AZURE_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2025-04-01-preview")
 AZURE_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT","https://ai-proxy.lab.epam.com")
 DEFAULT_MODEL = os.environ.get("MODEL", "gpt-4o")
+DEEPSEEK_ENDPOINT = os.environ.get("DEEPSEEK_ENDPOINT")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+DEBUG_DEEPSEEK = os.environ.get("DEBUG_DEEPSEEK", "0") in ("1", "true", "True")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL")
 
 # Create a single shared engine instance
 _engine = None
@@ -55,8 +125,14 @@ def _call_llm_with_fallback(client, messages, model=None, tools=None, tool_choic
     """
     # Try OpenAI-like API first
     try:
-        return client.chat.completions.create(model=model, messages=messages, tools=tools, tool_choice=tool_choice)
-    except AttributeError:
+        resp = client.chat.completions.create(model=model, messages=messages, tools=tools, tool_choice=tool_choice)
+        # If the client returned a raw dict (HTTP JSON), normalize it into
+        # an object with the `.choices[0].message.content` shape expected
+        # elsewhere in the code.
+        if isinstance(resp, dict):
+            return _normalize_llm_dict_response(resp)
+        return resp
+    except AttributeError as attr_error:
         # LangChain or other client style: convert messages into a plain prompt
         prompt_text = "\n".join([f"{m.get('role','user').upper()}: {m.get('content','')}" for m in messages])
         try:
@@ -74,19 +150,185 @@ def _call_llm_with_fallback(client, messages, model=None, tools=None, tool_choic
             )
 
         # Build a minimal response object compatible with the OpenAI-style access used below
-        class _Msg:
-            def __init__(self, content):
-                self.content = content
+        return _wrap_text_response(text_out)
+    except Exception as e:
+        # Handle network and other errors more gracefully
+        error_msg = str(e).lower()
+        if 'no route' in error_msg or 'connection' in error_msg or 'timeout' in error_msg:
+            raise RuntimeError(
+                f"Network error connecting to LLM endpoint. "
+                f"Please check your network connection and endpoint configuration. "
+                f"Error: {e}"
+            )
+        # Re-raise other exceptions
+        raise
 
-        class _Choice:
-            def __init__(self, message):
-                self.message = message
 
-        class _Resp:
-            def __init__(self, choice):
-                self.choices = [choice]
+# --- Deepseek client (module-level) ---------------------------------
+class DeepseekClient:
+    """Minimal Deepseek client wrapper that exposes an OpenAI-like interface.
 
-        return _Resp(_Choice(_Msg(text_out)))
+    This implementation assumes Deepseek exposes an HTTP JSON API that accepts
+    a POST with fields like `model` and `messages`. Adjust the payload mapping
+    if your Deepseek API differs.
+    """
+    def __init__(self, endpoint: str, api_key: str, timeout: int = 30):
+        self.endpoint = endpoint.rstrip('/')
+        self.api_key = api_key
+        self.timeout = timeout
+        self.debug = DEBUG_DEEPSEEK
+
+    class Chat:
+        def __init__(self, parent):
+            self.parent = parent
+
+        class Completions:
+            def __init__(self, parent):
+                self.parent = parent
+
+            def create(self, model=None, messages=None, tools=None, tool_choice=None):
+                url = f"{self.parent.endpoint}/v1/chat/completions"
+                # Try different auth header formats and payload formats to be compatible with various Deepseek APIs
+                auth_options = [
+                    ("Authorization", f"Bearer {self.parent.api_key}"),
+                    ("X-API-Key", self.parent.api_key),
+                    ("X-Api-Key", self.parent.api_key),
+                ]
+
+                # Prepare two payload styles: OpenAI-style messages, and a simple 'input' text
+                messages_text = None
+                try:
+                    messages_text = "\n".join([m.get('content','') for m in (messages or [])])
+                except Exception:
+                    messages_text = None
+
+                payload_variants = []
+                # Build payloads but omit `model` key when None to avoid sending invalid empty model
+                openai_style = {'messages': messages}
+                input_style = {'input': messages_text}
+                # prefer explicit model from DEEPSEEK_MODEL env var if provided, else use passed model
+                chosen_model = DEEPSEEK_MODEL or model
+                if chosen_model:
+                    openai_style['model'] = chosen_model
+                    input_style['model'] = chosen_model
+
+                payload_variants.append(openai_style)
+                payload_variants.append(input_style)
+
+                if tools is not None:
+                    # include tools in first variant only (if any)
+                    payload_variants[0]['tools'] = tools
+                if tool_choice is not None:
+                    payload_variants[0]['tool_choice'] = tool_choice
+
+                last_exception = None
+                for header_name, header_value in auth_options:
+                    headers = {header_name: header_value, 'Content-Type': 'application/json'}
+                    for payload in payload_variants:
+                        try:
+                            resp = requests.post(url, headers=headers, json=payload, timeout=self.parent.timeout)
+                            resp.raise_for_status()
+                            data = resp.json()
+                            # success: normalize and return
+                            return _normalize_llm_dict_response(data)
+                        except requests.exceptions.RequestException as e:
+                            last_exception = e
+                            resp = getattr(e, 'response', None)
+                            if resp is not None:
+                                try:
+                                    text = resp.text
+                                except Exception:
+                                    text = '<unable to read response text>'
+                                # keep minimal server error info
+                                print('[DEEPSEEK HTTP ERROR] status=', resp.status_code)
+                                print('[DEEPSEEK HTTP ERROR BODY]', text)
+                            else:
+                                print('[DEEPSEEK HTTP ERROR]', str(e))
+                            # try next combo
+
+                # all attempts failed
+                if last_exception:
+                    raise last_exception
+                raise RuntimeError('Deepseek request failed with unknown error')
+
+        @property
+        def completions(self):
+            return DeepseekClient.Chat.Completions(self.parent)
+
+    @property
+    def chat(self):
+        return DeepseekClient.Chat(self)
+
+    def __call__(self, prompt: str):
+        # Simple fallback: call completions endpoint with a single user message
+        url = f"{self.endpoint}/v1/chat/completions"
+        auth_options = [
+            ("Authorization", f"Bearer {self.api_key}"),
+            ("X-API-Key", self.api_key),
+            ("X-Api-Key", self.api_key),
+        ]
+
+        # Build payload variants for simple call; prefer DEEPSEEK_MODEL if set
+        chosen_model = DEEPSEEK_MODEL
+        payload_variants = []
+        m1 = {'messages': [{'role': 'user', 'content': prompt}]}
+        m2 = {'input': prompt}
+        if chosen_model:
+            m1['model'] = chosen_model
+            m2['model'] = chosen_model
+        payload_variants.append(m1)
+        payload_variants.append(m2)
+        payload_variants.append({'input': prompt})
+
+        last_exception = None
+        for header_name, header_value in auth_options:
+            headers = {header_name: header_value, 'Content-Type': 'application/json'}
+            for payload in payload_variants:
+                if self.debug:
+                    masked = dict(headers)
+                    if header_name.lower().startswith('authorization') and isinstance(masked.get(header_name), str):
+                        masked[header_name] = masked[header_name][:10] + '...[REDACTED]'
+                    print("[DEEPSEEK ATTEMPT] header:", header_name, "payload_keys:", list(payload.keys()))
+                    print("[DEEPSEEK REQ URL]", url)
+                    try:
+                        print("[DEEPSEEK REQ PAYLOAD]", json.dumps(payload, ensure_ascii=False))
+                    except Exception:
+                        print("[DEEPSEEK REQ PAYLOAD] (unserializable)")
+
+                try:
+                    resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if self.debug:
+                        print("[DEEPSEEK RESP STATUS]", resp.status_code)
+                        try:
+                            print("[DEEPSEEK RESP BODY]", json.dumps(data, ensure_ascii=False))
+                        except Exception:
+                            print("[DEEPSEEK RESP TEXT]", resp.text)
+                    # normalize dict response into expected object
+                    if isinstance(data, dict):
+                        nr = _normalize_llm_dict_response(data)
+                        return nr.choices[0].message.content
+                    return str(data)
+                except requests.exceptions.RequestException as e:
+                    last_exception = e
+                    resp = getattr(e, 'response', None)
+                    if resp is not None:
+                        try:
+                            text = resp.text
+                        except Exception:
+                            text = '<unable to read response text>'
+                        print('[DEEPSEEK HTTP ERROR] status=', resp.status_code)
+                        print('[DEEPSEEK HTTP ERROR BODY]', text)
+                    else:
+                        print('[DEEPSEEK HTTP ERROR]', str(e))
+                    # try next combo
+
+        if last_exception:
+            raise last_exception
+        raise RuntimeError('Deepseek request failed with unknown error')
+
+
 
 
 
@@ -105,6 +347,8 @@ def execute_sql(sql: str, params: Optional[dict] = None):
             cols = []
         rows = res.fetchall()
     return list(cols), rows
+
+
 
 
 def get_all_table_names() -> list[str]:
@@ -299,33 +543,28 @@ def execute_query(user_prompt: str, sql_query: str):
         return json.dumps({"error": "Multiple statements not allowed"}, ensure_ascii=False)
     
     try:
-        engine = get_engine()
-        with engine.connect() as conn:
-            result = conn.execute(text(sql_query))
-            
-            # Check if it's a COUNT query
-            if 'COUNT(*)' in sql_upper or 'COUNT(' in sql_upper:
-                row = result.fetchone()
-                return json.dumps({"count": row[0]}, ensure_ascii=False)
-            
-            # Otherwise, return rows
-            columns = result.keys()
-            rows = result.fetchall()
-            
-            # Convert to list of dicts
-            data = []
-            for row in rows:
-                record = {}
-                for i, col in enumerate(columns):
-                    value = row[i]
-                    # Handle date/datetime objects
-                    if hasattr(value, 'isoformat'):
-                        value = value.isoformat()
-                    record[col] = value
-                data.append(record)
-            
-            return json.dumps(data, ensure_ascii=False)
-            
+        # Use execute_sql helper to get columns and rows
+        columns, rows = execute_sql(sql_query)
+
+        # Check for COUNT queries and short-circuit
+        if 'COUNT(*)' in sql_upper or 'COUNT(' in sql_upper:
+            # rows may be a list of RowProxy; take first value if present
+            if rows and len(rows) > 0:
+                first = rows[0][0]
+                return json.dumps({"count": first}, ensure_ascii=False)
+            return json.dumps({"count": 0}, ensure_ascii=False)
+
+        data = []
+        for row in rows:
+            record = {}
+            for i, col in enumerate(columns):
+                value = row[i]
+                if hasattr(value, 'isoformat'):
+                    value = value.isoformat()
+                record[col] = value
+            data.append(record)
+
+        return json.dumps(data, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": f"Query execution failed: {str(e)}"}, ensure_ascii=False)
 
@@ -346,20 +585,37 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
     - assistant_text: Natural language response explaining the results
     - tool_response_json: Raw JSON output from execute_query function (or None if no function called)
     """
-    if not AZURE_KEY:
-        raise RuntimeError("AZURE_OPENAI_API_KEY is not set; cannot run LLM function-tool flow")
+    provider = LLM_PROVIDER or os.environ.get("LLM_PROVIDER", "azure")
+    provider = provider.lower()
 
-    # Prepare client
-    try:
-        from openai import AzureOpenAI as OpenAIClient
-    except Exception:
-        OpenAIClient = AzureOpenAI
-
-    client = OpenAIClient(
-        api_key=AZURE_KEY,
-        api_version=AZURE_API_VERSION,
-        azure_endpoint=AZURE_ENDPOINT,
-    )
+    if provider == "azure":
+        if not AZURE_KEY:
+            raise RuntimeError("AZURE_OPENAI_API_KEY is not set; cannot run LLM function-tool flow with Azure provider")
+        
+        # Prepare Azure OpenAI client - try official openai library first
+        try:
+            from openai import AzureOpenAI as OpenAIClient
+            client = OpenAIClient(
+                api_key=AZURE_KEY,
+                api_version=AZURE_API_VERSION,
+                azure_endpoint=AZURE_ENDPOINT,
+            )
+        except ImportError:
+            # Fallback to langchain if openai library not available
+            from langchain_community.llms import AzureOpenAI
+            client = AzureOpenAI(
+                api_key=AZURE_KEY,
+                api_version=AZURE_API_VERSION,
+                azure_endpoint=AZURE_ENDPOINT,
+            )
+            
+    elif provider == "deepseek":
+        # Minimal Deepseek HTTP-backed client
+        if not DEEPSEEK_API_KEY or not DEEPSEEK_ENDPOINT:
+            raise RuntimeError("DEEPSEEK_API_KEY and DEEPSEEK_ENDPOINT must be set to use the Deepseek provider")
+        client = DeepseekClient(endpoint=DEEPSEEK_ENDPOINT, api_key=DEEPSEEK_API_KEY)
+    else:
+        raise RuntimeError(f"Unsupported LLM_PROVIDER '{provider}'; supported: azure, deepseek")
 
     model = model or DEFAULT_MODEL
 
@@ -511,8 +767,42 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
 
     tool_calls = getattr(response_message, 'tool_calls', None)
     if not tool_calls:
-        # no function call; return assistant reply
-        return response_message.content, None
+        # Fallback: some LLM endpoints (or models) don't support structured function-calling.
+        # Try to detect a SQL query embedded in the assistant text and execute it.
+        assistant_text = response_message.content or ""
+
+        def _extract_sql(text: str) -> Optional[str]:
+            # 1) fenced code block labeled sql
+            m = re.search(r"```sql\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
+            if m:
+                return m.group(1).strip()
+            # 2) any fenced code block containing SELECT
+            m = re.search(r"```(?:.*?)\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
+            if m and 'select' in m.group(1).lower():
+                return m.group(1).strip()
+            # 3) inline SQL after a 'SQL:' marker
+            m = re.search(r"SQL:\s*(SELECT[\s\S]+)", text, re.IGNORECASE)
+            if m:
+                # take up to a blank line or end
+                sql = m.group(1).strip()
+                sql = re.split(r"\n\s*\n", sql)[0]
+                return sql.strip()
+            # 4) last resort: find first 'SELECT' ... ';' or end
+            m = re.search(r"(SELECT[\s\S]+?)(?:;|$)", text, re.IGNORECASE)
+            if m:
+                return m.group(1).strip().rstrip(';')
+            return None
+
+        extracted_sql = _extract_sql(assistant_text)
+        if extracted_sql:
+            # Log detected SQL
+            print(f"\n[Detected SQL from assistant] {extracted_sql}\n")
+            function_response = execute_query(user_prompt=prompt, sql_query=extracted_sql)
+            # Return assistant text and the raw function response
+            return assistant_text, function_response
+
+        # no function call and no SQL detected: return assistant reply as-is
+        return assistant_text, None
 
     # Append the assistant message with tool_calls first (required by OpenAI API)
     messages.append({
@@ -557,5 +847,39 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
     # Step 7: Final assistant call with tool outputs
     final_response = _call_llm_with_fallback(client, messages, model=model, tools=tools)
     final_text = final_response.choices[0].message.content
+    # If the final assistant reply looks like a placeholder and we have a tool result,
+    # return a direct, formatted version of the function response so the app shows results.
+    def _looks_like_placeholder(text: Optional[str]) -> bool:
+        if not text:
+            return True
+        low = text.strip().lower()
+        triggers = [
+            "i'll help",
+            "let me generate",
+            "let me",
+            "i will generate",
+            "i will",
+            "processing",
+            "working on"
+        ]
+        return any(t in low for t in triggers)
+
+    if function_response and _looks_like_placeholder(final_text):
+        # try to parse JSON function_response
+        try:
+            parsed = json.loads(function_response)
+            if isinstance(parsed, dict) and 'count' in parsed:
+                assistant_summary = f"Query result: count = {parsed['count']}"
+            elif isinstance(parsed, list):
+                # show up to first 10 rows
+                rows = parsed[:10]
+                assistant_summary = "Query result (first rows):\n" + json.dumps(rows, ensure_ascii=False, indent=2)
+            else:
+                assistant_summary = json.dumps(parsed, ensure_ascii=False)
+        except Exception:
+            assistant_summary = str(function_response)
+
+        return assistant_summary, function_response
+
     # return final assistant text and the raw tool output (function_response)
     return final_text, function_response

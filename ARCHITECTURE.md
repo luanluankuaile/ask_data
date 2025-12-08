@@ -2,7 +2,14 @@
 
 ## System Overview
 
-This is a Natural Language to SQL application that uses Azure OpenAI's LLM with function calling capability to intelligently query a multi-table database (students, weather, teacher). The system features **token-optimized fuzzy table matching** that identifies relevant tables before loading detailed schemas, reducing token consumption by 70-90% for large databases. Users input natural language questions, and the system automatically generates SQL queries, executes them, and returns results in both natural language and table format.
+This is a Natural Language to SQL application that uses LLM (Azure OpenAI or Deepseek) with function calling capability to intelligently query a multi-table database (students, classes, teachers, courses, course_enrollment). The system features **token-optimized fuzzy table matching** that identifies relevant tables before loading detailed schemas, reducing token consumption by 70-90% for large databases. Users input natural language questions, and the system automatically generates SQL queries, executes them, and returns results in both natural language and table format.
+
+### Supported LLM Providers
+
+- **Azure OpenAI** (default): GPT-4o with function calling via Azure endpoint
+- **Deepseek**: deepseek-chat model via Deepseek API endpoint
+
+Both providers support the same workflow with automatic client fallback and response normalization.
 
 ## Method Call Relationships
 
@@ -25,7 +32,9 @@ This is a Natural Language to SQL application that uses Azure OpenAI's LLM with 
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │ 3. run_function_tool_flow: Initialize LLM client               │
-│    - Creates Azure OpenAI client                                │
+│    - Provider selection based on LLM_PROVIDER env var           │
+│    - Azure: Creates AzureOpenAI client (official or langchain) │
+│    - Deepseek: Creates DeepseekClient (HTTP-based wrapper)     │
 │    STEP 1: Get table summaries (fuzzy matching)                │
 │    - Calls get_table_summaries() → returns:                    │
 │      [{'table_name': 'students',                               │
