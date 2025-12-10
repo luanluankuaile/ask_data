@@ -30,7 +30,7 @@ LLM_PROVIDER=azure
 
 # Azure OpenAI Configuration
 AZURE_OPENAI_API_KEY="your-api-key"
-AZURE_OPENAI_ENDPOINT="https://ai-proxy.lab.epam.com"
+AZURE_OPENAI_ENDPOINT="your-azure-endpoint"
 OPENAI_API_VERSION="2025-04-01-preview"
 MODEL="gpt-4o"
 ```
@@ -48,7 +48,6 @@ LLM_PROVIDER=deepseek
 DEEPSEEK_ENDPOINT="https://api.deepseek.com"
 DEEPSEEK_API_KEY="sk-xxxxxxxxxxxxx"
 DEEPSEEK_MODEL="deepseek-chat"
-DEBUG_DEEPSEEK=0  # Set to 1 for detailed logging
 ```
 
 ### Switching Providers

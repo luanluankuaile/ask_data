@@ -1,8 +1,8 @@
-from langchain_community.llms import AzureOpenAI
 from langchain.sql_database import SQLDatabase
 from dotenv import load_dotenv
 import os
 import requests
+import re
 from sqlalchemy import create_engine, text
 import json
 from typing import Optional
@@ -78,7 +78,6 @@ load_dotenv()
 DATABASE_URI = os.environ.get("DATABASE_URI")
 if not DATABASE_URI:
     print("ERROR: DATABASE_URI is not set. Please set the environment variable:")
-    print("  export DATABASE_URI=\"postgresql://postgres:admin@localhost:5432/mydb\"")
     raise SystemExit(1)
 
 # Initialize DB wrapper (lazy / best-effort). Wrap in try/except so failures don't stop simple SQL runs.
@@ -92,12 +91,11 @@ except Exception as e:
 # Azure OpenAI Configuration
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "azure").lower()
 AZURE_KEY = os.environ.get("AZURE_OPENAI_API_KEY")
-AZURE_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2025-04-01-preview")
-AZURE_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT","https://ai-proxy.lab.epam.com")
+AZURE_API_VERSION = os.environ.get("OPENAI_API_VERSION")
+AZURE_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
 DEFAULT_MODEL = os.environ.get("MODEL", "gpt-4o")
 DEEPSEEK_ENDPOINT = os.environ.get("DEEPSEEK_ENDPOINT")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-DEBUG_DEEPSEEK = os.environ.get("DEBUG_DEEPSEEK", "0") in ("1", "true", "True")
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL")
 
 # Create a single shared engine instance
@@ -176,7 +174,6 @@ class DeepseekClient:
         self.endpoint = endpoint.rstrip('/')
         self.api_key = api_key
         self.timeout = timeout
-        self.debug = DEBUG_DEEPSEEK
 
     class Chat:
         def __init__(self, parent):
@@ -284,27 +281,10 @@ class DeepseekClient:
         for header_name, header_value in auth_options:
             headers = {header_name: header_value, 'Content-Type': 'application/json'}
             for payload in payload_variants:
-                if self.debug:
-                    masked = dict(headers)
-                    if header_name.lower().startswith('authorization') and isinstance(masked.get(header_name), str):
-                        masked[header_name] = masked[header_name][:10] + '...[REDACTED]'
-                    print("[DEEPSEEK ATTEMPT] header:", header_name, "payload_keys:", list(payload.keys()))
-                    print("[DEEPSEEK REQ URL]", url)
-                    try:
-                        print("[DEEPSEEK REQ PAYLOAD]", json.dumps(payload, ensure_ascii=False))
-                    except Exception:
-                        print("[DEEPSEEK REQ PAYLOAD] (unserializable)")
-
                 try:
                     resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
                     resp.raise_for_status()
                     data = resp.json()
-                    if self.debug:
-                        print("[DEEPSEEK RESP STATUS]", resp.status_code)
-                        try:
-                            print("[DEEPSEEK RESP BODY]", json.dumps(data, ensure_ascii=False))
-                        except Exception:
-                            print("[DEEPSEEK RESP TEXT]", resp.text)
                     # normalize dict response into expected object
                     if isinstance(data, dict):
                         nr = _normalize_llm_dict_response(data)
