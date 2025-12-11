@@ -565,8 +565,9 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
     - assistant_text: Natural language response explaining the results
     - tool_response_json: Raw JSON output from execute_query function (or None if no function called)
     """
-    provider = LLM_PROVIDER or os.environ.get("LLM_PROVIDER", "azure")
+    provider = LLM_PROVIDER
     provider = provider.lower()
+    print("provider currently using",provider)
 
     if provider == "azure":
         if not AZURE_KEY:
