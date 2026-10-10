@@ -1,6 +1,6 @@
 # Text to SQL - Student Management Query System
 
-This repository provides a Streamlit application that translates natural-language queries into safe, read-only SQL statements. It uses LLM (Azure OpenAI or Deepseek) with Function Calling for intelligent SQL generation based on business-meaningful schema metadata, with automatic table identification to optimize token usage.
+This repository provides a FastAPI application that translates natural-language queries into safe, read-only SQL statements. It uses LLM (Azure OpenAI or Deepseek) with Function Calling for intelligent SQL generation based on business-meaningful schema metadata, with automatic table identification to optimize token usage.
 
 ## Features
 
@@ -64,7 +64,7 @@ No code changes required!
 
 ```bash
 conda activate myenv
-pip install -r requirements.txt
+pip install -r back_end/requirements.txt
 ```
 
 ### 2. Initialize Database Schema
@@ -77,12 +77,12 @@ conda activate myenv
 sudo -i -u postgres
 psql -U postgres -d mydb
 CREATE DATABASE mydb;
-run sql in db_init.sql
+run sql in back_end/db_init.sql
 ```
 
 ```bash
 # Connect to your PostgreSQL database and run:
-psql -U <username> -d <database> -f db_init.sql
+psql -U <username> -d <database> -f back_end/db_init.sql
 ```
 
 This creates:
@@ -95,14 +95,20 @@ This creates:
 
 ## Run Application
 
-Start the Streamlit app:
+Start the page and the API together:
 
 ```bash
-# Standard mode
-streamlit run app.py
+python start.py
+```
 
-# Headless mode (for servers)
-python -m streamlit run app.py --server.port 8501 --server.headless true
+Open the page at `http://localhost:8000`. Interactive API docs are at `http://localhost:8000/docs`.
+
+Ask a question from another client:
+
+```bash
+curl -X POST http://localhost:8000/api/query \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "How many students enrolled after 2020?"}'
 ```
 
 ## How It Works
@@ -259,9 +265,8 @@ For databases with many tables, the system optimizes token usage:
 Test the system with various queries:
 
 ```bash
-# Start the app
-streamlit run app.py
-
+# Start the page and the API together
+python start.py
 ```
 
 Check the logs for table identification:
@@ -303,13 +308,17 @@ Check the logs for table identification:
 ## Project Structure
 
 ```
-students-project-13/
-├── app.py                       # Streamlit UI
-├── query_sql.py                 # Core logic with metadata-driven SQL generation
-├── schema_metadata.sql          # Database schema with metadata
+ask_data/
+├── start.py                     # Starts the page and the API together
+├── front_end/
+│   └── index.html               # Web page for asking questions
+├── back_end/
+│   ├── app.py                   # FastAPI app and query API
+│   ├── query_sql.py             # Core logic with metadata-driven SQL generation
+│   ├── db_init.sql              # Database schema with metadata
+│   └── requirements.txt         # Python dependencies
 ├── ARCHITECTURE.md              # System architecture documentation
-├── README.md                    # This file
-└── requirements.txt             # Python dependencies
+└── README.md                    # This file
 ```
 
 ## Key Functions

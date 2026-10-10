@@ -10,7 +10,7 @@ test-simple:
   script:
     - echo "Testing basic Python setup..."
     - python --version
-    - pip install --no-cache-dir -r requirements.txt || echo "Failed to install requirements"
+    - pip install --no-cache-dir -r back_end/requirements.txt || echo "Failed to install requirements"
     - echo "Build successful!"
   only:
     - main

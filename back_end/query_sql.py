@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import os
 import requests
 import re
+from pathlib import Path
 from sqlalchemy import create_engine, text
 import json
 from typing import Optional
@@ -72,6 +73,7 @@ def _wrap_text_response(text: str) -> NormalizedResponse:
     return NormalizedResponse([NormalizedChoice(NormalizedMessage(content=text))])
 
 
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 load_dotenv()
 
 # Read DATABASE_URI from environment
@@ -512,7 +514,7 @@ def execute_query(sql_query: str):
     pre-generated SQL queries with security validation.
     """
     # Security validation
-    sql_upper = sql_query.strip().upper()
+    sql_upper = " ".join(sql_query.split()).upper()
     if not sql_upper.startswith('SELECT'):
         return json.dumps({"error": "Only SELECT queries are allowed"}, ensure_ascii=False)
     
@@ -529,9 +531,13 @@ def execute_query(sql_query: str):
         # Use execute_sql helper to get columns and rows
         columns, rows = execute_sql(sql_query)
 
-        # Check for COUNT queries and short-circuit
-        if 'COUNT(*)' in sql_upper or 'COUNT(' in sql_upper:
-            # rows may be a list of RowProxy; take first value if present
+        # Scalar COUNT only. GROUP BY queries that include COUNT stay as rows.
+        scalar_count = re.match(
+            r"SELECT\s+(?:DISTINCT\s+)?COUNT\s*\(.*\)\s*(?:AS\s+\w+)?\s+FROM\b",
+            sql_upper,
+        )
+        grouped = " GROUP BY " in f" {sql_upper} " or " UNION " in f" {sql_upper} "
+        if scalar_count and not grouped:
             if rows and len(rows) > 0:
                 first = rows[0][0]
                 return json.dumps({"count": first}, ensure_ascii=False)
@@ -552,13 +558,313 @@ def execute_query(sql_query: str):
         return json.dumps({"error": f"Query execution failed: {str(e)}"}, ensure_ascii=False)
 
 
+_BULLET_LINE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\S")
+_TABLE_ROW = re.compile(r"^\s*\|.+\|\s*$")
+_TABLE_SEP = re.compile(
+    r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$"
+)
+_FILLER_PREFIX = re.compile(
+    r"^(?:based on the (?:query )?results[,:]?\s*"
+    r"|here (?:are|is) the results?[,:]?\s*"
+    r"|according to the (?:query|data)[,:]?\s*"
+    r"|the query (?:results|returned)[:,]?\s*)",
+    re.IGNORECASE,
+)
+_PLACEHOLDER_HINTS = (
+    "i'll help",
+    "let me generate",
+    "let me",
+    "i will generate",
+    "i will",
+    "processing",
+    "working on",
+)
+
+
+def _parse_function_response(function_response: Optional[str]):
+    if not function_response:
+        return None
+    try:
+        return json.loads(function_response)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _md_cell(value) -> str:
+    if value is None:
+        return ""
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\n", " ")
+        .strip()
+    )
+
+
+def _rows_to_markdown_table(rows: list[dict]) -> str:
+    columns: list[str] = []
+    seen = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                columns.append(str(key))
+    header = "| " + " | ".join(_md_cell(col) for col in columns) + " |"
+    separator = "| " + " | ".join("---" for _ in columns) + " |"
+    body = [
+        "| " + " | ".join(_md_cell(row.get(col)) for col in columns) + " |"
+        for row in rows
+    ]
+    return "\n".join([header, separator, *body])
+
+
+def _is_tabular(rows: list) -> bool:
+    if not rows or not all(isinstance(row, dict) for row in rows):
+        return False
+    keys = {key for row in rows for key in row.keys()}
+    return len(keys) > 1
+
+
+def _structured_markdown(parsed) -> Optional[str]:
+    """Turn query JSON into a markdown table or a bullet list."""
+    if isinstance(parsed, list):
+        if not parsed:
+            return "No matching results."
+        if _is_tabular(parsed):
+            return _rows_to_markdown_table(parsed)
+        if all(isinstance(row, dict) for row in parsed):
+            items = []
+            for row in parsed:
+                value = next(iter(row.values()), "")
+                items.append(f"- {_md_cell(value)}")
+            return "\n".join(items)
+        return "\n".join(f"- {_md_cell(item)}" for item in parsed)
+
+    if isinstance(parsed, dict):
+        if set(parsed) == {"error"}:
+            return str(parsed.get("error") or "")
+        values = list(parsed.values())
+        if len(parsed) == 1 and not isinstance(values[0], (list, dict)):
+            return None
+        if _is_tabular([parsed]):
+            return _rows_to_markdown_table([parsed])
+        return "\n".join(
+            f"- {_md_cell(key)}: {_md_cell(value)}"
+            for key, value in parsed.items()
+        )
+
+    if parsed is None:
+        return None
+    return f"- {_md_cell(parsed)}"
+
+
+def _is_placeholder_text(text: str) -> bool:
+    low = text.strip().lower()
+    return any(hint in low for hint in _PLACEHOLDER_HINTS)
+
+
+def _first_sentence(text: str) -> str:
+    parts = re.split(r"(?<=[。！？])|(?<=[.!?])\s+", text.strip(), maxsplit=1)
+    lead = parts[0].strip()
+    if len(lead) > 180:
+        lead = lead[:177].rstrip() + "..."
+    return lead
+
+
+def _clean_lead(line: str) -> str:
+    original = line.strip()
+    cleaned = _FILLER_PREFIX.sub("", original).strip()
+    if cleaned and original[:1].isupper() and cleaned[:1].islower():
+        cleaned = cleaned[:1].upper() + cleaned[1:]
+    return _first_sentence(cleaned) if cleaned else ""
+
+
+def _lead_sentence(text: str) -> str:
+    if not text or _is_placeholder_text(text):
+        return ""
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    if not lines:
+        return ""
+    first = lines[0]
+    if first.startswith(("{", "[", "```")) or _BULLET_LINE.match(first):
+        return ""
+    if _TABLE_ROW.match(first) or re.search(r"\bSELECT\b", first, re.IGNORECASE):
+        return ""
+    return _clean_lead(first)
+
+
+def _split_answer_blocks(text: str) -> list[tuple[str, str]]:
+    lines = text.splitlines()
+    blocks: list[tuple[str, str]] = []
+    index = 0
+    total = len(lines)
+    while index < total:
+        if not lines[index].strip():
+            index += 1
+            continue
+        is_table = (
+            _TABLE_ROW.match(lines[index])
+            and index + 1 < total
+            and _TABLE_SEP.match(lines[index + 1])
+        )
+        if is_table:
+            start = index
+            index += 2
+            while index < total and _TABLE_ROW.match(lines[index]):
+                index += 1
+            blocks.append(("table", "\n".join(lines[start:index])))
+            continue
+        if _BULLET_LINE.match(lines[index]):
+            start = index
+            while index < total and (
+                _BULLET_LINE.match(lines[index]) or not lines[index].strip()
+            ):
+                next_is_bullet = (
+                    index + 1 < total and _BULLET_LINE.match(lines[index + 1])
+                )
+                if not lines[index].strip() and not next_is_bullet:
+                    break
+                index += 1
+            chunk = [line for line in lines[start:index] if line.strip()]
+            blocks.append(("list", "\n".join(chunk)))
+            continue
+        start = index
+        while index < total and lines[index].strip():
+            if _BULLET_LINE.match(lines[index]) and index != start:
+                break
+            upcoming_table = (
+                _TABLE_ROW.match(lines[index])
+                and index + 1 < total
+                and _TABLE_SEP.match(lines[index + 1])
+            )
+            if upcoming_table:
+                break
+            index += 1
+        blocks.append(("text", "\n".join(lines[start:index])))
+    return blocks
+
+
+def _split_enum_items(line: str) -> Optional[list[str]]:
+    parts = [
+        part.strip()
+        for part in re.split(r"\s+(?=\d+[.)]\s+)", line.strip())
+        if part.strip()
+    ]
+    if len(parts) < 2 or not re.match(r"\d+[.)]\s+\S", parts[-1]):
+        return None
+    items = []
+    for part in parts:
+        if not re.match(r"\d+[.)]\s+", part):
+            continue
+        item = re.sub(r"^\d+[.)]\s+", "", part).strip()
+        if item:
+            items.append(item)
+    return items if len(items) > 1 else None
+
+
+def _itemize_inline(line: str) -> str:
+    enum_items = _split_enum_items(line)
+    if enum_items:
+        return "\n".join(f"- {item}" for item in enum_items)
+
+    chunks = [part.strip() for part in re.split(r"；|;\s+", line) if part.strip()]
+    if len(chunks) > 1:
+        return "\n".join(f"- {chunk}" for chunk in chunks)
+
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[。！？])|(?<=[.!?])\s+", line.strip())
+        if part.strip()
+    ]
+    if len(sentences) >= 3:
+        return "\n".join(f"- {sentence}" for sentence in sentences)
+    return line.strip()
+
+
+def _text_as_bullets(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    if stripped[:1] in "[{":
+        parsed = _parse_function_response(stripped)
+        if parsed is not None:
+            structured = _structured_markdown(parsed)
+            if structured:
+                return structured
+            if isinstance(parsed, dict) and len(parsed) == 1:
+                key, value = next(iter(parsed.items()))
+                return f"{key}: {value}"
+
+    rendered = []
+    blocks = _split_answer_blocks(stripped)
+    for index, (kind, content) in enumerate(blocks):
+        if kind == "table":
+            rendered.append(content.strip())
+            continue
+        if kind == "list":
+            items = []
+            for line in content.splitlines():
+                enum_items = _split_enum_items(line)
+                if enum_items:
+                    items.extend(f"- {item}" for item in enum_items)
+                    continue
+                match = re.match(r"^\s*(?:[-*+]|\d+[.)])\s+(.*?)\s*$", line)
+                if match and match.group(1).strip():
+                    items.append("- " + match.group(1).strip())
+            if items:
+                rendered.append("\n".join(items))
+            continue
+
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        next_kind = blocks[index + 1][0] if index + 1 < len(blocks) else None
+        if len(lines) == 1 and next_kind in ("list", "table"):
+            lead = _clean_lead(lines[0])
+            if lead:
+                rendered.append(lead)
+        elif len(lines) > 1:
+            rendered.append("\n".join(f"- {line}" for line in lines))
+        elif lines:
+            rendered.append(_itemize_inline(lines[0]))
+    return "\n\n".join(part for part in rendered if part)
+
+
+def format_concise_answer(
+    text: Optional[str],
+    function_response: Optional[str] = None,
+) -> str:
+    """Short answer: one lead sentence, bullets for text, a table for rows."""
+    parsed = _parse_function_response(function_response)
+    if isinstance(parsed, list) and not parsed:
+        return _lead_sentence(text or "") or "No matching results."
+    if isinstance(parsed, dict) and set(parsed) == {"error"}:
+        return str(parsed.get("error") or "") or "Query failed."
+    structured = _structured_markdown(parsed) if parsed is not None else None
+    if structured:
+        lead = _lead_sentence(text or "")
+        if lead:
+            return f"{lead}\n\n{structured}"
+        return structured
+
+    if isinstance(parsed, dict) and len(parsed) == 1:
+        value = next(iter(parsed.values()))
+        if not isinstance(value, (list, dict)):
+            lead = _lead_sentence(text or "")
+            if lead:
+                return lead
+            key = next(iter(parsed))
+            return f"{key}: {value}"
+
+    return _text_as_bullets(text or "")
+
+
 def run_function_tool_flow(prompt: str, model: Optional[str] = None):
     """Main workflow function: accepts NL prompt, uses function tool + NL generation to produce results.
     
-    This is the core method called by app.py's Streamlit interface.
+    This is the core method called by the FastAPI app in back_end/app.py.
     
     Flow:
-    1. Receives natural language prompt from app.py
+    1. Receives natural language prompt from the API
     2. First LLM call: Analyze prompt and identify relevant tables
     3. Query schema_metadata only for identified tables (token optimization)
     4. Second LLM call: Generate SQL based on relevant schema
@@ -708,6 +1014,7 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
         f"{schema_info}\n\n"
         "Important Guidelines:\n"
         "- Only generate SELECT queries (no INSERT/UPDATE/DELETE)\n"
+        "- Call execute_query exactly once, with one SELECT that answers the question\n"
         "- Use exact table and column names from the schema above\n"
         "- Use business descriptions to understand user intent and table relationships\n"
         "- Pay attention to foreign key relationships mentioned in descriptions for JOIN operations\n"
@@ -778,11 +1085,10 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
             # Log detected SQL
             print(f"\n[Detected SQL from assistant] {extracted_sql}\n")
             function_response = execute_query(sql_query=extracted_sql)
-            # Return assistant text and the raw function response
-            return assistant_text, function_response
+            answer = format_concise_answer(assistant_text, function_response)
+            return answer, function_response
 
-        # no function call and no SQL detected: return assistant reply as-is
-        return assistant_text, None
+        return format_concise_answer(assistant_text), None
 
     # Append the assistant message with tool_calls first (required by OpenAI API)
     messages.append({
@@ -800,22 +1106,35 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
         ]
     })
 
-    # Step 6: Execute tool calls
+    # Step 6: Execute the first query only. Extra tool calls are not run,
+    # so a follow-up guess cannot replace the SQL that answers the question.
     function_response = None
+    executed = False
     for tool_call in tool_calls:
         func_obj = getattr(tool_call, 'function', None)
         if not func_obj:
             continue
-            
+
         function_args = json.loads(func_obj.arguments)
-        
+
         if func_obj.name == 'execute_query':
             sql_query = function_args.get('sql_query', '')
-            
-            # Log the generated SQL for debugging
+            if executed:
+                print(f"\n[Skipped extra SQL] {sql_query}\n")
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": "execute_query",
+                    "content": json.dumps(
+                        {"error": "Only the first SELECT is executed."},
+                        ensure_ascii=False,
+                    ),
+                })
+                continue
+
             print(f"\n[Generated SQL] {sql_query}\n")
-            
             function_response = execute_query(sql_query=sql_query)
+            executed = True
             messages.append({
                 "tool_call_id": tool_call.id,
                 "role": "tool",
@@ -823,42 +1142,17 @@ def run_function_tool_flow(prompt: str, model: Optional[str] = None):
                 "content": function_response
             })
 
-    # Step 7: Final assistant call with tool outputs
-    final_response = _call_llm_with_fallback(client, messages, model=model, tools=tools)
+    # Step 7: Summarize the result. Do not pass tools, or the model may
+    # generate a second SQL instead of answering from the rows above.
+    messages.append({
+        "role": "user",
+        "content": (
+            "Answer the original question using only the query result above. "
+            "Use the user's language and keep it to one short sentence. "
+            "Do not generate another SQL query."
+        ),
+    })
+    final_response = _call_llm_with_fallback(client, messages, model=model)
     final_text = final_response.choices[0].message.content
-    # If the final assistant reply looks like a placeholder and we have a tool result,
-    # return a direct, formatted version of the function response so the app shows results.
-    def _looks_like_placeholder(text: Optional[str]) -> bool:
-        if not text:
-            return True
-        low = text.strip().lower()
-        triggers = [
-            "i'll help",
-            "let me generate",
-            "let me",
-            "i will generate",
-            "i will",
-            "processing",
-            "working on"
-        ]
-        return any(t in low for t in triggers)
-
-    if function_response and _looks_like_placeholder(final_text):
-        # try to parse JSON function_response
-        try:
-            parsed = json.loads(function_response)
-            if isinstance(parsed, dict) and 'count' in parsed:
-                assistant_summary = f"Query result: count = {parsed['count']}"
-            elif isinstance(parsed, list):
-                # show up to first 10 rows
-                rows = parsed[:10]
-                assistant_summary = "Query result (first rows):\n" + json.dumps(rows, ensure_ascii=False, indent=2)
-            else:
-                assistant_summary = json.dumps(parsed, ensure_ascii=False)
-        except Exception:
-            assistant_summary = str(function_response)
-
-        return assistant_summary, function_response
-
-    # return final assistant text and the raw tool output (function_response)
-    return final_text, function_response
+    answer = format_concise_answer(final_text, function_response)
+    return answer, function_response

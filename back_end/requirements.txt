@@ -1,7 +1,8 @@
 langchain==0.1.16
 langchain-community==0.0.38
 langchain-openai==0.1.4
-streamlit==1.50.0
+fastapi>=0.115.0
+uvicorn>=0.32.0
 python-dotenv==1.0.1
 loguru==0.7.2
 watchdog==4.0.0

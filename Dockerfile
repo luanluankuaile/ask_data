@@ -2,12 +2,12 @@ FROM python:3.11-slim-bookworm
 
 WORKDIR /code
 
-COPY ./requirements.txt /code/requirements.txt
+COPY ./back_end/requirements.txt /code/back_end/requirements.txt
 
-RUN pip install -r /code/requirements.txt
+RUN pip install -r /code/back_end/requirements.txt
 
 COPY . /code/
 
-EXPOSE 8501
+EXPOSE 8000
 
-ENTRYPOINT ["streamlit", "run", "app.py"]
+CMD ["python", "start.py"]

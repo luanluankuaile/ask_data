@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ask Data</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --card: #ffffff;
+      --text: #1f2933;
+      --muted: #62707d;
+      --line: #e4e7eb;
+      --accent: #ff4b4b;
+      --accent-dark: #e03131;
+      --error-bg: #fff1f0;
+      --error-text: #a8071a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Source Sans Pro", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 32px 24px 48px;
+    }
+    h1 { margin: 0 0 8px; font-size: 2rem; font-weight: 700; }
+    h2 { margin: 0 0 12px; font-size: 1.25rem; }
+    .meta, .caption { color: var(--muted); }
+    .meta code {
+      background: #eef1f4;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    form {
+      display: flex;
+      gap: 12px;
+      align-items: flex-end;
+      margin: 24px 0;
+    }
+    label { display: block; margin-bottom: 6px; font-weight: 600; }
+    .field { flex: 1; }
+    input[type="text"] {
+      width: 100%;
+      height: 42px;
+      padding: 8px 12px;
+      border: 1px solid #c5cdd6;
+      border-radius: 6px;
+      font-size: 1rem;
+    }
+    button {
+      height: 42px;
+      min-width: 48px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--accent);
+      color: white;
+      font-size: 1.2rem;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-dark); }
+    button:disabled { opacity: 0.6; cursor: wait; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px 18px;
+      margin-bottom: 16px;
+    }
+    .error {
+      background: var(--error-bg);
+      color: var(--error-text);
+      border-color: #ffccc7;
+    }
+    .hidden { display: none; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.95rem;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f8fafc; }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    #assistant p { margin: 0 0 10px; }
+    #assistant ul, #assistant ol { margin: 0 0 10px; padding-left: 1.25rem; }
+    #assistant li { margin: 4px 0; }
+    #assistant p:last-child,
+    #assistant ul:last-child,
+    #assistant ol:last-child,
+    #assistant table:last-child { margin-bottom: 0; }
+    #assistant table { margin-top: 4px; }
+    hr { border: 0; border-top: 1px solid var(--line); margin: 28px 0 12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Ask Your Data</h1>
+    <p class="meta">Using <code id="database-uri">…</code></p>
+    <form id="ask-form">
+      <div class="field">
+        <label for="prompt">Enter your question about data you have in database</label>
+        <input id="prompt" type="text" placeholder="What data can I ask about?" autocomplete="off" required>
+      </div>
+      <button id="submit" type="submit" title="Submit your question">➜</button>
+    </form>
+    <section id="error" class="card error hidden"></section>
+    <section id="assistant-card" class="card hidden">
+      <h2>AI Assistant Response</h2>
+      <div id="assistant"></div>
+    </section>
+    <hr>
+    <p class="caption">This app translates natural language questions into SQL queries. It intelligently identifies relevant tables based on your question and generates secure SELECT statements. Supports multi-table queries with automatic schema detection.</p>
+  </main>
+  <script>
+    const form = document.getElementById("ask-form");
+    const promptInput = document.getElementById("prompt");
+    const submitButton = document.getElementById("submit");
+    const errorBox = document.getElementById("error");
+    const assistantCard = document.getElementById("assistant-card");
+    const assistantBox = document.getElementById("assistant");
+
+    function show(el) { el.classList.remove("hidden"); }
+    function hide(el) { el.classList.add("hidden"); }
+
+    function renderTable(rows) {
+      const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      columns.forEach((column) => {
+        const th = document.createElement("th");
+        th.textContent = column;
+        headRow.appendChild(th);
+      });
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      rows.forEach((row) => {
+        const tr = document.createElement("tr");
+        columns.forEach((column) => {
+          const td = document.createElement("td");
+          const value = row[column];
+          td.textContent = value == null ? "" : String(value);
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      return table;
+    }
+
+    function isTableRow(line) {
+      const trimmed = line.trim();
+      return trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.length > 1;
+    }
+
+    function isSeparatorRow(line) {
+      return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+    }
+
+    function parseTableCells(line) {
+      let trimmed = line.trim();
+      if (trimmed.startsWith("|")) trimmed = trimmed.slice(1);
+      if (trimmed.endsWith("|")) trimmed = trimmed.slice(0, -1);
+      const cells = [];
+      let current = "";
+      for (let i = 0; i < trimmed.length; i += 1) {
+        if (trimmed[i] === "\\" && trimmed[i + 1] === "|") {
+          current += "|";
+          i += 1;
+          continue;
+        }
+        if (trimmed[i] === "|") {
+          cells.push(current.trim());
+          current = "";
+          continue;
+        }
+        current += trimmed[i];
+      }
+      cells.push(current.trim());
+      return cells;
+    }
+
+    function renderMarkdownTable(lines) {
+      const header = parseTableCells(lines[0]);
+      const records = lines.slice(2).filter(isTableRow).map((line) => {
+        const cells = parseTableCells(line);
+        const record = {};
+        header.forEach((column, index) => {
+          record[column || "col" + (index + 1)] = cells[index] == null ? "" : cells[index];
+        });
+        return record;
+      });
+      if (!records.length) {
+        const empty = {};
+        header.forEach((column, index) => {
+          empty[column || "col" + (index + 1)] = "";
+        });
+        return renderTable([empty]);
+      }
+      return renderTable(records);
+    }
+
+    function isListLine(line) {
+      return /^\s*(?:[-*+]|\d+[.)])\s+\S/.test(line);
+    }
+
+    function renderList(lines) {
+      const ordered = lines.every((line) => /^\s*\d+[.)]\s+/.test(line));
+      const list = document.createElement(ordered ? "ol" : "ul");
+      lines.forEach((line) => {
+        const item = document.createElement("li");
+        item.textContent = line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").trim();
+        list.appendChild(item);
+      });
+      return list;
+    }
+
+    function renderStructuredValue(value) {
+      const isRecord = (item) => item && typeof item === "object" && !Array.isArray(item);
+      if (Array.isArray(value)) {
+        if (value.length && value.every(isRecord)) {
+          const keys = new Set(value.flatMap((row) => Object.keys(row)));
+          if (keys.size > 1) return renderTable(value);
+          const list = document.createElement("ul");
+          value.forEach((row) => {
+            const item = document.createElement("li");
+            item.textContent = String(Object.values(row)[0] ?? "");
+            list.appendChild(item);
+          });
+          return list;
+        }
+        const list = document.createElement("ul");
+        value.forEach((entry) => {
+          const item = document.createElement("li");
+          item.textContent = entry != null && typeof entry === "object"
+            ? JSON.stringify(entry)
+            : String(entry);
+          list.appendChild(item);
+        });
+        return list;
+      }
+      if (isRecord(value)) {
+        const entries = Object.entries(value);
+        if (entries.length === 1 && (entries[0][1] == null || typeof entries[0][1] !== "object")) {
+          const paragraph = document.createElement("p");
+          paragraph.textContent = entries[0][0] + ": " + entries[0][1];
+          return paragraph;
+        }
+        return renderTable([value]);
+      }
+      const paragraph = document.createElement("p");
+      paragraph.textContent = String(value);
+      return paragraph;
+    }
+
+    function renderAssistant(text) {
+      assistantBox.replaceChildren();
+      const trimmed = (text || "").trim();
+      if (!trimmed) {
+        hide(assistantCard);
+        return;
+      }
+      if (
+        (trimmed.startsWith("{") && trimmed.endsWith("}"))
+        || (trimmed.startsWith("[") && trimmed.endsWith("]"))
+      ) {
+        try {
+          assistantBox.appendChild(renderStructuredValue(JSON.parse(trimmed)));
+          show(assistantCard);
+          return;
+        } catch (err) {
+          /* plain text that happens to start with a bracket */
+        }
+      }
+
+      const lines = trimmed.split(/\r?\n/);
+      let index = 0;
+      while (index < lines.length) {
+        if (!lines[index].trim()) {
+          index += 1;
+          continue;
+        }
+        if (isTableRow(lines[index]) && index + 1 < lines.length && isSeparatorRow(lines[index + 1])) {
+          const tableLines = [lines[index], lines[index + 1]];
+          index += 2;
+          while (index < lines.length && isTableRow(lines[index])) {
+            tableLines.push(lines[index]);
+            index += 1;
+          }
+          assistantBox.appendChild(renderMarkdownTable(tableLines));
+          continue;
+        }
+        if (isListLine(lines[index])) {
+          const listLines = [];
+          while (index < lines.length && (isListLine(lines[index]) || !lines[index].trim())) {
+            const nextIsItem = index + 1 < lines.length && isListLine(lines[index + 1]);
+            if (!lines[index].trim() && !nextIsItem) break;
+            if (lines[index].trim()) listLines.push(lines[index]);
+            index += 1;
+          }
+          if (listLines.length) assistantBox.appendChild(renderList(listLines));
+          continue;
+        }
+        const paragraphLines = [];
+        while (index < lines.length && lines[index].trim() && !isListLine(lines[index])) {
+          const upcomingTable = isTableRow(lines[index])
+            && index + 1 < lines.length
+            && isSeparatorRow(lines[index + 1]);
+          if (upcomingTable) break;
+          paragraphLines.push(lines[index].trim());
+          index += 1;
+        }
+        if (paragraphLines.length > 1) {
+          assistantBox.appendChild(renderList(paragraphLines.map((line) => "- " + line)));
+        } else if (paragraphLines.length === 1) {
+          const paragraph = document.createElement("p");
+          paragraph.textContent = paragraphLines[0];
+          assistantBox.appendChild(paragraph);
+        }
+      }
+      show(assistantCard);
+    }
+
+    async function loadInfo() {
+      const response = await fetch("/api/info");
+      if (!response.ok) return;
+      const data = await response.json();
+      document.getElementById("database-uri").textContent = data.database_uri;
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const prompt = promptInput.value.trim();
+      if (!prompt) return;
+      hide(errorBox);
+      submitButton.disabled = true;
+      try {
+        const response = await fetch("/api/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          hide(assistantCard);
+          errorBox.textContent = data.detail || "Failed to process query";
+          show(errorBox);
+          return;
+        }
+        renderAssistant(data.assistant_text || "");
+      } catch (err) {
+        hide(assistantCard);
+        errorBox.textContent = "Failed to process query: " + err.message;
+        show(errorBox);
+      } finally {
+        submitButton.disabled = false;
+      }
+    });
+
+    loadInfo();
+  </script>
+</body>
+</html>

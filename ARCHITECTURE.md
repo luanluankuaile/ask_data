@@ -2,7 +2,7 @@
 
 ## System Overview
 
-This is a Natural Language to SQL application that uses LLM (Azure OpenAI or Deepseek) with function calling capability to intelligently query a multi-table database (students, classes, teachers, courses, course_enrollment). The system features **token-optimized fuzzy table matching** that identifies relevant tables before loading detailed schemas, reducing token consumption by 70-90% for large databases. Users input natural language questions, and the system automatically generates SQL queries, executes them, and returns results in both natural language and table format.
+This is a Natural Language to SQL application that uses LLM (Azure OpenAI or Deepseek) with function calling capability to intelligently query a multi-table database (students, classes, teachers, courses, course_enrollment). The system features **token-optimized fuzzy table matching** that identifies relevant tables before loading detailed schemas, reducing token consumption by 70-90% for large databases. Users input natural language questions through the FastAPI page or `POST /api/query`, and the system automatically generates SQL queries, executes them, and returns results in both natural language and table format.
 
 ### Supported LLM Providers
 
@@ -21,9 +21,9 @@ Both providers support the same workflow with automatic client fallback and resp
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 1. app.py: Streamlit receives prompt                          │
-│    - User enters question in text input                         │
-│    - Clicks "Generate and Query" button                         │
+│ 1. app.py: FastAPI receives prompt                            │
+│    - User enters a question on the web page, or calls           │
+│      POST /api/query                                            │
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -114,10 +114,9 @@ Both providers support the same workflow with automatic client fallback and resp
 └────────────────────────┬────────────────────────────────────────┘
                          ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 10. app.py: Display results in Streamlit                      │
-│    - Shows AI response text                                     │
-│    - Parses JSON and displays as DataFrame table               │
-│    - Stores in session_state for reference                      │
+│ 10. app.py: Return JSON and render the page                   │
+│    - assistant_text and parsed result go back as JSON           │
+│    - The page shows the reply and a results table               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -198,21 +197,21 @@ Returns: List of professors with experience details
 
 ## Detailed Component Explanation
 
-### 1. **app.py** - Streamlit UI Layer
+### 1. **app.py** - FastAPI Layer
 
 **Responsibilities**: 
-- Provides web interface for user interaction
+- Serves the web page and the query API
 - Receives natural language prompts
-- Routes requests to appropriate backend functions
-- Displays results in user-friendly format
+- Routes requests to the query workflow
+- Returns results as JSON for the page to render
 
-**Key Functions**:
-- Receives user input via `st.text_input()`
-- Calls `run_function_tool_flow(prompt)` for main workflow
-- Parses JSON results and displays as DataFrames
+**Key endpoints**:
+- `GET /` serves `front_end/index.html`
+- `POST /api/query` accepts `{ "prompt": "..." }` and calls `run_function_tool_flow(prompt)`
+- Parses tool JSON before returning it
 - Handles two result types:
-  - **Statistics** (dict): `{"count": 42}` → displayed as single-row table
-  - **Student details** (list): `[{id, name, date}, ...]` → displayed as multi-row table
+  - **Statistics** (dict): `{"count": 42}` → displayed as a single-row table
+  - **Student details** (list): `[{id, name, date}, ...]` → displayed as a multi-row table
 
 ### 2. **query_sql.py: run_function_tool_flow()** - Orchestrator
 
@@ -465,7 +464,7 @@ Columns:
 ### Error Handling
 - Graceful fallback when Azure OpenAI is not configured
 - Clear error messages guide users to correct setup
-- Session state preserves last successful results
+- The page shows the latest response returned by `POST /api/query`
 
 ## Example Dialog Flows
 
@@ -609,7 +608,7 @@ Columns:
 
 ## Tech Stack
 
-- **Frontend**: Streamlit
+- **API / UI**: FastAPI, with a static page at `/`
 - **AI**: Azure OpenAI (GPT-4o) with Function Calling
 - **Database**: PostgreSQL / SQLite
 - **ORM**: SQLAlchemy
