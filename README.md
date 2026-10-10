@@ -13,6 +13,7 @@ This repository provides a FastAPI application that translates natural-language 
 - 🌐 **Multi-Table Support**: Handles complex queries across students, classes, teachers, courses, and enrollments
 - 📈 **Dynamic SQL Generation**: LLM generates SQL queries based on schema metadata instead of fixed function tools
 - 🔗 **Relational Queries**: Supports JOIN operations between related tables
+- 🧭 **Editable Relationship Mappings**: AI proposes metadata-based join paths; users can choose and edit join columns before saving
 - 🛡️ **Robust Error Handling**: Network error detection and graceful fallback
 
 ## Configuration
@@ -92,6 +93,8 @@ This creates:
 - `course` table - 15 courses across different departments
 - `course_enrollment` table - Student course selections with grades and scores
 - `schema_metadata` table - Business descriptions for all tables and columns
+- `semantic_relationship_catalog` table - The AI-generated whole-database relationship model
+- `semantic_relationship_mappings` table - User-selected join paths used by SQL generation
 
 ## Run Application
 
@@ -102,6 +105,7 @@ python start.py
 ```
 
 Open the page at `http://localhost:8000`. Interactive API docs are at `http://localhost:8000/docs`.
+Manage and save relationship paths at `http://localhost:8000/relationships`.
 
 Ask a question from another client:
 
@@ -150,6 +154,20 @@ The system performs **semantic matching** based on business descriptions:
 | "Which courses did Tom take?" | `students`, `course`, `course_enrollment` | Student name + course concept |
 | "Teachers teaching Math" | `teacher`, `course` | Subject reference |
 | "Average score in Computer Science" | `course`, `course_enrollment` | Course name + grade concept |
+
+### Relationship Mappings
+
+Open `/relationships` to see the full relationship graph. Drag table nodes to arrange the graph and select a relationship edge to edit or delete it. Select **Generate full model** to have the configured LLM read all `schema_metadata` descriptions and live columns and create a global relationship catalog. Valid manual edge edits are preserved and take precedence over refreshed AI suggestions; edits whose columns no longer exist or are incompatible are dropped with a warning. Relationships have only two visual states: AI-generated and manually edited. Deleted edges stay hidden and out of path search until **Generate full model** is explicitly run again. Invalid schema references are excluded and shown as warnings. The generated catalog is saved and reused until the schema or metadata changes.
+
+Choose two endpoint tables from the selectors or click two graph nodes, then select **Find paths** to compare paths from the saved global model. Select a path, adjust either join column using the column selectors, and save it. Non-unique joins require an explicit acknowledgement because they can multiply result rows. The saved mapping is shared for the configured database and is used as the only allowed JOIN path by `/api/query`. If the schema or metadata changes, the saved model and mappings are marked stale and must be generated/reviewed again.
+
+The page is also available through `GET /relationships`; the model endpoints are `GET /api/relationships/model` and `POST /api/relationships/model/refresh`. Path and selected-mapping endpoints are `POST /api/relationships/options` and `GET`/`PUT /api/relationships/mapping`.
+
+Run the database-independent relationship tests with:
+
+```bash
+python -m unittest back_end.test_relationship_service
+```
 
 ## Schema Metadata
 

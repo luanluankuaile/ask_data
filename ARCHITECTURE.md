@@ -466,6 +466,20 @@ Columns:
 - Clear error messages guide users to correct setup
 - The page shows the latest response returned by `POST /api/query`
 
+## Relationship Mapping Lifecycle
+
+The `/relationships` page exposes an explicit workflow for defining joins:
+
+1. `load_schema_catalog()` introspects live tables, columns, types, keys, and foreign keys, then combines them with table/column descriptions and FK hints from `schema_metadata`.
+2. `POST /api/relationships/model/refresh` sends the complete schema and metadata context to the configured LLM once. The JSON relationship catalog is validated against live identifiers/types and stored in `semantic_relationship_catalog`; invalid or hallucinated columns are discarded. Valid `user_edited` edges from the previous model are merged back and take precedence for their table pair. `GET /api/relationships/model` returns the graph and its current/stale state.
+3. `POST /api/relationships/options` performs bounded, cycle-free graph search between selected endpoints and returns several local path options without another LLM call. Users choose a path and can edit each edge's equality-column pair. `PUT /api/relationships/mapping` validates the edit, requires confirmation for non-unique-to-non-unique joins, and persists the ordered path with a schema/metadata fingerprint.
+4. `run_function_tool_flow()` loads applicable saved mappings and includes their exact join columns and any intermediate tables in the SQL-generation context. Unselected or stale proposals are not supplied as authorized joins.
+5. `execute_query()` parses SQL using SQLGlot's PostgreSQL dialect and rejects JOIN predicates that do not match a saved mapping before the existing SELECT-only checks execute the query.
+
+The model and selected-mapping persistence tables are created by `back_end/db_init.sql`; `ensure_mapping_store()` also creates them for an existing database on first API use. A schema/metadata fingerprint mismatch marks the global model and saved paths stale and excludes the paths from SQL generation until the user refreshes and reviews them.
+
+The mapping catalog is shared across the single configured database in v1. It is not user-scoped because the application currently has no authentication layer.
+
 ## Example Dialog Flows
 
 ### Example 1: Count Query with Token Optimization

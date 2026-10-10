@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Relationship mappings | Ask Data</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f2f5f3;
+      --surface: #ffffff;
+      --ink: #172b2a;
+      --muted: #5b706d;
+      --line: #d6e0dc;
+      --green: #087e6b;
+      --green-dark: #056556;
+      --lime: #e7f4bd;
+      --amber: #835400;
+      --amber-bg: #fff5d9;
+      --red: #9f3428;
+      --red-bg: #fff0ed;
+      --ai-color: #879943;
+      --ai-soft: #edf2cf;
+      --ai-ink: #566522;
+      --manual-color: #3f7180;
+      --shadow: 0 12px 34px rgba(27, 54, 48, .07);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background-color: var(--paper);
+      background-image: linear-gradient(135deg, rgba(8, 126, 107, .045) 25%, transparent 25%),
+        linear-gradient(315deg, rgba(221, 237, 210, .42) 25%, transparent 25%);
+      background-size: 32px 32px;
+      font-family: "IBM Plex Sans", "Source Sans Pro", "Segoe UI", sans-serif;
+    }
+    main { width: min(1120px, calc(100% - 40px)); margin: 0 auto; padding: 25px 0 64px; }
+    nav { display: flex; gap: 22px; border-bottom: 1px solid var(--line); padding: 0 0 15px; }
+    nav a { color: var(--muted); font-size: .92rem; font-weight: 650; text-decoration: none; }
+    nav a[aria-current="page"] { color: var(--green); }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 20px; padding: 34px 0 26px; }
+    .eyebrow { color: var(--green); font-size: .74rem; font-weight: 750; text-transform: uppercase; letter-spacing: .08em; }
+    h1 { margin: 7px 0 0; font-family: Georgia, "Times New Roman", serif; font-size: 2.2rem; line-height: 1.08; font-weight: 500; }
+    header p { margin: 0; max-width: 430px; color: var(--muted); line-height: 1.5; }
+    .toolbar, .option { background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); }
+    .toolbar { display: grid; grid-template-columns: minmax(190px, 1fr) minmax(190px, 1fr) auto; align-items: end; gap: 14px; padding: 18px; }
+    .model-panel { margin: 18px 0 24px; padding: 18px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); }
+    .model-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 12px; }
+    .model-header p { margin: 5px 0 0; color: var(--muted); font-size: .86rem; }
+    .model-header button { min-width: 150px; min-height: 39px; font-size: .88rem; }
+    .legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 9px 0 12px; color: var(--muted); font-size: .78rem; }
+    .legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .legend i { display: inline-block; width: 24px; height: 0; border-top: 3px solid; }
+    .legend .ai i { border-color: var(--ai-color); border-top-style: solid; }
+    .legend .manual i { border-color: var(--manual-color); border-top-style: solid; }
+    .graph-window { overflow: auto; border: 1px solid #edf1ef; background: #fbfcfb; }
+    #model-graph { display: block; min-width: 100%; }
+    .graph-node { cursor: pointer; }
+    .graph-node rect { fill: #fff; stroke: #9bb6ad; stroke-width: 1.5; }
+    .graph-node:hover rect { fill: #eff8f4; stroke: var(--green); stroke-width: 2.5; }
+    .graph-node:focus, .graph-node:focus-visible { outline: none; }
+    .graph-node:focus rect, .graph-node:focus-visible rect { stroke: var(--green); stroke-width: 3; filter: drop-shadow(0 2px 4px rgba(8, 126, 107, .2)); }
+    .graph-node text { fill: var(--ink); font: 700 13px "IBM Plex Sans", "Segoe UI", sans-serif; pointer-events: none; }
+    .graph-node .node-desc { fill: var(--muted); font-size: 10px; font-weight: 400; }
+    .graph-edge { stroke-width: 2.5; opacity: .86; }
+    .graph-edge.selected { stroke-width: 4; opacity: 1; filter: drop-shadow(0 0 2px rgba(8, 126, 107, .42)); }
+    .graph-edge-hit { stroke: transparent; stroke-width: 16; cursor: pointer; pointer-events: stroke; }
+    .graph-edge-hit:focus, .graph-edge-hit:focus-visible { outline: none; }
+    .graph-edge.ai { stroke: var(--ai-color); }
+    .graph-edge.manual { stroke: var(--manual-color); }
+    .graph-edge-label { fill: #334a45; font: 11px "IBM Plex Sans", "Segoe UI", sans-serif; paint-order: stroke; stroke: #fbfcfb; stroke-width: 4px; stroke-linejoin: round; pointer-events: none; }
+    #model-status { min-height: 22px; margin-top: 9px; color: var(--muted); font-size: .82rem; }
+    .edge-editor { display: grid; grid-template-columns: minmax(110px, .7fr) minmax(150px, 1fr) 28px minmax(150px, 1fr) minmax(110px, .7fr) auto auto auto; align-items: end; gap: 10px; margin-top: 14px; padding: 14px; background: #f2f8f4; border: 1px solid #c8ddd4; }
+    .edge-editor[hidden] { display: none; }
+    .edge-editor button { min-height: 40px; min-width: 95px; font-size: .86rem; }
+    #edge-cancel { color: var(--muted); background: transparent; border-color: var(--line); }
+    #edge-delete { color: #fff; background: var(--red); border-color: var(--red); }
+    #edge-delete:hover { background: #84291f; }
+    @media (max-width: 720px) { .edge-editor { grid-template-columns: 1fr 1fr; } }
+    label { display: block; margin-bottom: 7px; color: var(--muted); font-size: .78rem; font-weight: 700; }
+    select, button { min-height: 43px; width: 100%; border: 1px solid #bdcbc6; border-radius: 4px; font: inherit; }
+    select { padding: 0 11px; color: var(--ink); background: white; }
+    button { width: auto; min-width: 150px; padding: 0 18px; border-color: var(--green); color: white; background: var(--green); font-weight: 700; cursor: pointer; }
+    button:hover { background: var(--green-dark); }
+    button:disabled { opacity: .58; cursor: wait; }
+    .notice { margin: 14px 0; padding: 12px 14px; border-left: 3px solid #d6a42c; color: var(--amber); background: var(--amber-bg); line-height: 1.45; }
+    .notice.error { border-color: var(--red); color: var(--red); background: var(--red-bg); }
+    .notice[hidden], #results[hidden], #empty[hidden] { display: none; }
+    .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 30px 0 12px; }
+    h2 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 1.4rem; font-weight: 500; }
+    .muted { color: var(--muted); font-size: .88rem; }
+    #options { display: grid; gap: 13px; }
+    .option { padding: 17px 18px; border-radius: 5px; transition: border-color .16s ease, transform .16s ease; }
+    .option:hover { border-color: #8aaea4; transform: translateY(-1px); }
+    .option.selected { border: 2px solid var(--green); padding: 16px 17px; }
+    .option-top { display: flex; align-items: flex-start; gap: 12px; }
+    .option-top input { accent-color: var(--green); margin: 4px 0 0; }
+    .path-title { flex: 1; font-weight: 750; overflow-wrap: anywhere; }
+    .tag { display: inline-flex; border-radius: 3px; padding: 4px 7px; background: #eaf2ef; color: #335a50; font-size: .73rem; font-weight: 700; }
+    .tag.ai { border-left: 3px solid var(--ai-color); background: var(--ai-soft); color: var(--ai-ink); }
+    .tag.manual { border-left: 3px solid var(--manual-color); background: #e4f0f3; color: #315c69; }
+    .rationale { margin: 10px 0 14px 27px; color: var(--muted); font-size: .9rem; line-height: 1.45; }
+    .join-row { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(150px, 1fr) 28px minmax(150px, 1fr) minmax(130px, .8fr); align-items: center; gap: 9px; padding: 12px 0; border-top: 1px solid #edf1ef; }
+    .join-row .table-name { overflow-wrap: anywhere; font-size: .9rem; font-weight: 700; }
+    .join-row select { min-width: 0; min-height: 39px; font-size: .88rem; }
+    .equals { color: var(--green); text-align: center; font-weight: 800; }
+    .risk { margin: 8px 0 0 27px; color: var(--amber); font-size: .83rem; }
+    .footer-actions { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 16px; padding: 15px 0; border-top: 1px solid var(--line); }
+    .confirm { display: flex; align-items: flex-start; gap: 9px; max-width: 640px; color: var(--muted); font-size: .85rem; line-height: 1.4; }
+    .confirm input { margin-top: 3px; accent-color: var(--green); }
+    #save { min-width: 175px; }
+    #status { min-height: 24px; margin-top: 6px; color: var(--green-dark); font-size: .88rem; }
+    #empty { margin-top: 18px; padding: 24px 0; border-top: 1px solid var(--line); color: var(--muted); }
+    @media (max-width: 720px) {
+      main { width: min(calc(100% - 28px), 600px); padding-top: 18px; }
+      header { display: block; padding-top: 26px; }
+      header p { margin-top: 12px; }
+      .toolbar { grid-template-columns: 1fr; }
+      .model-header { align-items: stretch; flex-direction: column; }
+      .model-header button { width: 100%; }
+      .join-row { grid-template-columns: 1fr 1fr; }
+      .equals { display: none; }
+      .join-row .table-name { grid-column: span 2; }
+      .footer-actions { align-items: stretch; flex-direction: column; }
+      #save { width: 100%; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
+  </style>
+</head>
+<body>
+  <main>
+    <nav aria-label="Main navigation">
+      <a href="/">Ask data</a>
+      <a href="/relationships" aria-current="page">Relationship mappings</a>
+    </nav>
+    <header>
+      <div>
+        <div class="eyebrow">Semantic model</div>
+        <h1>Relationship Mappings</h1>
+      </div>
+      <p>Explore the full AI-generated model, arrange tables, edit relationship columns, and choose paths for SQL generation.</p>
+    </header>
+
+    <section class="model-panel" aria-labelledby="model-title">
+      <div class="model-header">
+        <div>
+          <h2 id="model-title">Full relationship model</h2>
+          <p id="model-summary">Loading the saved model…</p>
+        </div>
+        <button id="refresh-model" type="button" title="Refresh AI suggestions; valid manual edge edits are preserved">Generate full model</button>
+      </div>
+      <div class="legend" aria-label="Relationship provenance">
+        <span class="ai"><i></i>AI inferred</span>
+        <span class="manual"><i></i>Manual override</span>
+      </div>
+      <div class="graph-window"><svg id="model-graph" role="img" aria-label="Table relationship graph"></svg></div>
+      <div id="edge-editor" class="edge-editor" hidden>
+        <div><label>Left table</label><span id="edge-left-table"></span></div>
+        <div><label for="edge-left-column">Left mapping column</label><select id="edge-left-column"></select></div>
+        <span class="equals">=</span>
+        <div><label for="edge-right-column">Right mapping column</label><select id="edge-right-column"></select></div>
+        <div><label>Right table</label><span id="edge-right-table"></span></div>
+        <button id="edge-save" type="button">Save edge</button>
+        <button id="edge-cancel" type="button">Cancel</button>
+        <button id="edge-delete" type="button">Delete relationship</button>
+      </div>
+      <div id="model-status" role="status"></div>
+    </section>
+
+    <section class="toolbar" aria-label="Path endpoints">
+      <div>
+        <label for="source">Starting table</label>
+        <select id="source" disabled><option>Loading tables…</option></select>
+      </div>
+      <div>
+        <label for="target">Destination table</label>
+        <select id="target" disabled><option>Loading tables…</option></select>
+      </div>
+      <button id="generate" type="button" disabled>Find paths</button>
+    </section>
+    <div id="notice" class="notice" role="status" hidden></div>
+    <div class="section-head">
+      <h2>Path options</h2>
+      <span id="path-count" class="muted"></span>
+    </div>
+    <div id="empty">Choose two tables to generate relationship paths.</div>
+    <section id="results" hidden>
+      <div id="options"></div>
+      <div class="footer-actions">
+        <label class="confirm"><input id="confirm-risk" type="checkbox">
+          <span>I reviewed any non-unique join warning. Such mappings can multiply result rows.</span>
+        </label>
+        <button id="save" type="button" disabled>Save selected mapping</button>
+      </div>
+      <div id="status" role="status"></div>
+    </section>
+  </main>
+  <script>
+    const sourceSelect = document.getElementById("source");
+    const targetSelect = document.getElementById("target");
+    const generateButton = document.getElementById("generate");
+    const saveButton = document.getElementById("save");
+    const optionsBox = document.getElementById("options");
+    const results = document.getElementById("results");
+    const empty = document.getElementById("empty");
+    const notice = document.getElementById("notice");
+    const status = document.getElementById("status");
+    const confirmRisk = document.getElementById("confirm-risk");
+    let tables = [];
+    let options = [];
+    let selectedIndex = -1;
+    let fingerprint = "";
+    let relationshipModel = null;
+    let graphPickStart = null;
+    let modelFingerprint = "";
+    let graphPositions = new Map();
+    let graphNodes = new Map();
+    let graphEdgeLayer = null;
+    let draggedNode = null;
+    let skipGraphClick = false;
+    let selectedEdge = null;
+    const graph = document.getElementById("model-graph");
+    const modelSummary = document.getElementById("model-summary");
+    const modelStatus = document.getElementById("model-status");
+    const refreshModelButton = document.getElementById("refresh-model");
+    const edgeEditor = document.getElementById("edge-editor");
+    const edgeLeftColumn = document.getElementById("edge-left-column");
+    const edgeRightColumn = document.getElementById("edge-right-column");
+
+    function setNotice(message, isError = false) {
+      notice.textContent = message;
+      notice.classList.toggle("error", isError);
+      notice.hidden = !message;
+    }
+
+    function selectedTables() {
+      return [sourceSelect.value, targetSelect.value];
+    }
+
+    function renderSelect(select, selectedValue) {
+      select.replaceChildren();
+      tables.forEach((table) => {
+        const option = document.createElement("option");
+        option.value = table.name;
+        option.textContent = table.business_name
+          ? table.business_name + " · " + table.name
+          : table.name;
+        select.appendChild(option);
+      });
+      if (selectedValue && tables.some((table) => table.name === selectedValue)) {
+        select.value = selectedValue;
+      }
+      select.disabled = tables.length === 0;
+    }
+
+    function tableByName(name) {
+      return tables.find((table) => table.name === name);
+    }
+
+    function svgElement(name, attrs = {}) {
+      const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+      Object.entries(attrs).forEach(([key, value]) => element.setAttribute(key, String(value)));
+      return element;
+    }
+
+    function edgeKind(edge) {
+      const source = edge.provenance || "ai_inferred";
+      if (source.includes("user_edited")) return "manual";
+      return "ai";
+    }
+
+    function chooseGraphTable(tableName) {
+      if (!graphPickStart) {
+        graphPickStart = tableName;
+        sourceSelect.value = tableName;
+        modelStatus.textContent = "Starting table: " + tableName + ". Choose a second node as the destination.";
+        return;
+      }
+      if (graphPickStart === tableName) {
+        modelStatus.textContent = "Choose a different destination table.";
+        return;
+      }
+      targetSelect.value = tableName;
+      graphPickStart = null;
+      generateButton.disabled = false;
+      modelStatus.textContent = "Path endpoints selected. Find paths below to compare relationship options.";
+    }
+
+    function drawGraphEdges() {
+      if (!graphEdgeLayer) return;
+      graphEdgeLayer.replaceChildren();
+      (relationshipModel?.relationships || [])
+        .filter((edge) => edge.provenance !== "user_deleted")
+        .forEach((edge) => {
+        const left = graphPositions.get(edge.left_table);
+        const right = graphPositions.get(edge.right_table);
+        if (!left || !right) return;
+        const x1 = left.x + 102;
+        const y1 = left.y + 31;
+        const x2 = right.x + 102;
+        const y2 = right.y + 31;
+        const visible = svgElement("line", {
+          x1, y1, x2, y2,
+          class: "graph-edge " + edgeKind(edge)
+            + (selectedEdge && selectedEdge.left_table === edge.left_table
+              && selectedEdge.left_column === edge.left_column
+              && selectedEdge.right_table === edge.right_table
+              && selectedEdge.right_column === edge.right_column ? " selected" : ""),
+        });
+        const hit = svgElement("line", {
+          x1, y1, x2, y2,
+          class: "graph-edge-hit",
+          tabindex: "0",
+          role: "button",
+          "aria-label": "Edit " + edge.left_table + "." + edge.left_column
+            + " equals " + edge.right_table + "." + edge.right_column,
+        });
+        const title = svgElement("title");
+        title.textContent = edge.left_table + "." + edge.left_column + " = "
+          + edge.right_table + "." + edge.right_column + " · " + edge.provenance
+          + " · Select to edit";
+        hit.appendChild(title);
+        hit.addEventListener("click", () => openEdgeEditor(edge));
+        hit.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openEdgeEditor(edge);
+          }
+        });
+        const label = svgElement("text", {
+          x: (x1 + x2) / 2,
+          y: (y1 + y2) / 2 - 4,
+          "text-anchor": "middle",
+          class: "graph-edge-label",
+        });
+        label.textContent = edge.left_column + " = " + edge.right_column;
+        graphEdgeLayer.append(visible, hit, label);
+      });
+    }
+
+    function moveGraphNode(tableName, x, y) {
+      const position = graphPositions.get(tableName);
+      const node = graphNodes.get(tableName);
+      if (!position || !node) return;
+      position.x = Math.max(0, Math.min(x, Number(graph.viewBox.baseVal.width) - 204));
+      position.y = Math.max(0, Math.min(y, Number(graph.viewBox.baseVal.height) - 62));
+      const rect = node.querySelector("rect");
+      const texts = node.querySelectorAll("text");
+      rect.setAttribute("x", position.x);
+      rect.setAttribute("y", position.y);
+      texts[0].setAttribute("x", position.x + 12);
+      texts[0].setAttribute("y", position.y + 24);
+      texts[1].setAttribute("x", position.x + 12);
+      texts[1].setAttribute("y", position.y + 43);
+      drawGraphEdges();
+    }
+
+    function renderRelationshipGraph() {
+      graph.replaceChildren();
+      graphNodes = new Map();
+      const relationships = (relationshipModel?.relationships || [])
+        .filter((edge) => edge.provenance !== "user_deleted");
+      const columns = 3;
+      const cellWidth = 280;
+      const cellHeight = 130;
+      const rows = Math.max(1, Math.ceil(tables.length / columns));
+      const width = columns * cellWidth + 50;
+      const height = rows * cellHeight + 35;
+      graph.setAttribute("viewBox", "0 0 " + width + " " + height);
+      graph.setAttribute("width", String(width));
+      graph.setAttribute("height", String(height));
+
+      tables.forEach((table, index) => {
+        if (!graphPositions.has(table.name)) {
+          graphPositions.set(table.name, {
+            x: 25 + (index % columns) * cellWidth,
+            y: 20 + Math.floor(index / columns) * cellHeight,
+          });
+        }
+      });
+
+      graphEdgeLayer = svgElement("g", { class: "graph-edge-layer" });
+      const nodeLayer = svgElement("g", { class: "graph-node-layer" });
+      graph.append(graphEdgeLayer, nodeLayer);
+      drawGraphEdges();
+
+      tables.forEach((table) => {
+        const position = graphPositions.get(table.name);
+        const node = svgElement("g", {
+          class: "graph-node",
+          tabindex: "0",
+          role: "button",
+          "aria-label": "Use " + table.name + " as a path endpoint; drag to arrange",
+        });
+        const rect = svgElement("rect", {
+          x: position.x, y: position.y, width: 204, height: 62, rx: 5,
+        });
+        const name = svgElement("text", { x: position.x + 12, y: position.y + 24 });
+        name.textContent = table.name.length > 22 ? table.name.slice(0, 20) + "…" : table.name;
+        const description = svgElement("text", {
+          x: position.x + 12, y: position.y + 43, class: "node-desc",
+        });
+        const businessName = table.business_name || (table.columns?.length || 0) + " columns";
+        description.textContent = businessName.length > 28
+          ? businessName.slice(0, 26) + "…"
+          : businessName;
+        const title = svgElement("title");
+        title.textContent = (table.business_name ? table.business_name + " · " : "") + table.name;
+        node.append(rect, name, description, title);
+        node.addEventListener("pointerdown", (event) => {
+          if (event.button !== 0) return;
+          draggedNode = {
+            tableName: table.name,
+            startX: event.clientX,
+            startY: event.clientY,
+            originX: position.x,
+            originY: position.y,
+            moved: false,
+          };
+          node.setPointerCapture(event.pointerId);
+        });
+        node.addEventListener("pointermove", (event) => {
+          if (!draggedNode || draggedNode.tableName !== table.name) return;
+          const bounds = graph.getBoundingClientRect();
+          const scaleX = graph.viewBox.baseVal.width / bounds.width;
+          const scaleY = graph.viewBox.baseVal.height / bounds.height;
+          const dx = (event.clientX - draggedNode.startX) * scaleX;
+          const dy = (event.clientY - draggedNode.startY) * scaleY;
+          if (Math.abs(dx) + Math.abs(dy) > 3) draggedNode.moved = true;
+          moveGraphNode(table.name, draggedNode.originX + dx, draggedNode.originY + dy);
+        });
+        node.addEventListener("pointerup", () => {
+          if (draggedNode?.moved) {
+            skipGraphClick = true;
+            window.setTimeout(() => { skipGraphClick = false; }, 0);
+          }
+          draggedNode = null;
+        });
+        node.addEventListener("click", () => {
+          if (skipGraphClick) return;
+          chooseGraphTable(table.name);
+        });
+        node.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            chooseGraphTable(table.name);
+          }
+        });
+        graphNodes.set(table.name, node);
+        nodeLayer.appendChild(node);
+      });
+
+      if (!relationshipModel) {
+        modelSummary.textContent = "No generated model yet. Generate it to see table connections.";
+      } else if (relationshipModel.stale) {
+        modelSummary.textContent = "The saved model is stale. Refresh it to reflect current metadata.";
+      } else {
+        modelSummary.textContent = tables.length + " tables · " + relationships.length + " relationships";
+      }
+    }
+
+    async function loadRelationshipModel() {
+      const response = await fetch("/api/relationships/model");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Could not load relationship model");
+      relationshipModel = data.model;
+      modelFingerprint = data.fingerprint;
+      renderRelationshipGraph();
+    }
+
+    async function generateFullModel() {
+      refreshModelButton.disabled = true;
+      refreshModelButton.textContent = "Generating…";
+      modelStatus.textContent = "Reading all table metadata and asking AI to rebuild the model. Valid manual edge edits will be preserved…";
+      try {
+        const response = await fetch("/api/relationships/model/refresh", { method: "POST" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Failed to generate relationship model");
+        relationshipModel = {
+          relationships: data.relationships,
+          fingerprint: data.fingerprint,
+          updated_at: new Date().toISOString(),
+          stale: false,
+        };
+        modelFingerprint = data.fingerprint;
+        renderRelationshipGraph();
+        modelStatus.textContent = "Full model regenerated and saved. Valid manual edge edits were preserved.";
+        if (data.warnings?.length) setNotice(data.warnings.join(" "));
+      } catch (error) {
+        modelStatus.textContent = error.message;
+      } finally {
+        refreshModelButton.disabled = false;
+        refreshModelButton.textContent = "Refresh full model";
+      }
+    }
+
+    function populateEdgeColumns(select, tableName, selectedColumn) {
+      select.replaceChildren();
+      (tableByName(tableName)?.columns || []).forEach((column) => {
+        const option = document.createElement("option");
+        option.value = column.name;
+        const unique = column.unique ? " · unique" : "";
+        option.textContent = column.name + " · " + column.type + unique;
+        select.appendChild(option);
+      });
+      select.value = selectedColumn;
+    }
+
+    function openEdgeEditor(edge) {
+      selectedEdge = { ...edge };
+      drawGraphEdges();
+      document.getElementById("edge-left-table").textContent = edge.left_table;
+      document.getElementById("edge-right-table").textContent = edge.right_table;
+      populateEdgeColumns(edgeLeftColumn, edge.left_table, edge.left_column);
+      populateEdgeColumns(edgeRightColumn, edge.right_table, edge.right_column);
+      edgeEditor.hidden = false;
+      modelStatus.textContent = "Edit the equality columns, then save this relationship edge.";
+      edgeEditor.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+
+    async function saveEditedEdge() {
+      if (!selectedEdge) return;
+      const saveEdgeButton = document.getElementById("edge-save");
+      saveEdgeButton.disabled = true;
+      saveEdgeButton.textContent = "Saving…";
+      try {
+        const response = await fetch("/api/relationships/model/edge", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fingerprint: modelFingerprint,
+            left_table: selectedEdge.left_table,
+            left_column: selectedEdge.left_column,
+            right_table: selectedEdge.right_table,
+            right_column: selectedEdge.right_column,
+            updated_left_column: edgeLeftColumn.value,
+            updated_right_column: edgeRightColumn.value,
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Failed to save relationship edge");
+        relationshipModel.relationships = data.relationships;
+        relationshipModel.fingerprint = data.fingerprint;
+        relationshipModel.stale = false;
+        modelFingerprint = data.fingerprint;
+        edgeEditor.hidden = true;
+        selectedEdge = null;
+        renderRelationshipGraph();
+        modelStatus.textContent = "Relationship edge saved as a manual mapping. Path options will use the edited columns.";
+      } catch (error) {
+        modelStatus.textContent = error.message;
+      } finally {
+        saveEdgeButton.disabled = false;
+        saveEdgeButton.textContent = "Save edge";
+      }
+    }
+
+    async function deleteEditedEdge() {
+      if (!selectedEdge) return;
+      const edgeName = selectedEdge.left_table + "." + selectedEdge.left_column
+        + " = " + selectedEdge.right_table + "." + selectedEdge.right_column;
+      if (!window.confirm("Delete relationship " + edgeName + "? It will stay hidden until you generate the full model again.")) return;
+
+      const deleteButton = document.getElementById("edge-delete");
+      deleteButton.disabled = true;
+      deleteButton.textContent = "Deleting…";
+      try {
+        const response = await fetch("/api/relationships/model/edge", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fingerprint: modelFingerprint,
+            left_table: selectedEdge.left_table,
+            left_column: selectedEdge.left_column,
+            right_table: selectedEdge.right_table,
+            right_column: selectedEdge.right_column,
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Failed to delete relationship");
+        relationshipModel.relationships = data.relationships;
+        relationshipModel.fingerprint = data.fingerprint;
+        relationshipModel.stale = false;
+        selectedEdge = null;
+        edgeEditor.hidden = true;
+        renderRelationshipGraph();
+        modelStatus.textContent = "Relationship deleted. Find paths will no longer use it.";
+      } catch (error) {
+        modelStatus.textContent = error.message;
+      } finally {
+        deleteButton.disabled = false;
+        deleteButton.textContent = "Delete relationship";
+      }
+    }
+
+    function isRisky(option) {
+      return option.joins.some((join) => !join.left_unique && !join.right_unique);
+    }
+
+    function columnSelect(tableName, selectedColumn, onChange) {
+      const select = document.createElement("select");
+      select.setAttribute("aria-label", tableName + " join column");
+      const table = tableByName(tableName);
+      (table?.columns || []).forEach((column) => {
+        const option = document.createElement("option");
+        option.value = column.name;
+        const keys = [column.primary_key && "PK", column.unique && "unique"].filter(Boolean);
+        option.textContent = column.name + " · " + column.type + (keys.length ? " · " + keys.join(", ") : "");
+        select.appendChild(option);
+      });
+      select.value = selectedColumn;
+      select.addEventListener("change", () => onChange(select.value));
+      return select;
+    }
+
+    function updateSaveState() {
+      const option = options[selectedIndex];
+      saveButton.disabled = !option || (isRisky(option) && !confirmRisk.checked);
+    }
+
+    function updateRiskNotice(card, option) {
+      let risk = card.querySelector(".risk");
+      if (isRisky(option) && !risk) {
+        risk = document.createElement("p");
+        risk.className = "risk";
+        risk.textContent = "No join side is unique for at least one edge. Results may contain multiplied rows.";
+        card.appendChild(risk);
+      } else if (!isRisky(option) && risk) {
+        risk.remove();
+      }
+    }
+
+    function renderOptions() {
+      optionsBox.replaceChildren();
+      document.getElementById("path-count").textContent = options.length
+        ? options.length + " option" + (options.length === 1 ? "" : "s")
+        : "No validated options";
+      results.hidden = options.length === 0;
+      empty.hidden = options.length > 0;
+      if (!options.length) {
+        empty.textContent = "No valid relationship paths were returned. Check metadata warnings or choose different tables.";
+        return;
+      }
+
+      options.forEach((option, index) => {
+        const card = document.createElement("article");
+        card.className = "option" + (index === selectedIndex ? " selected" : "");
+        const top = document.createElement("div");
+        top.className = "option-top";
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "path-option";
+        radio.checked = index === selectedIndex;
+        radio.setAttribute("aria-label", "Select path " + option.tables.join(" to "));
+        const title = document.createElement("div");
+        title.className = "path-title";
+        title.textContent = option.tables.join("  →  ");
+        const tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = option.saved
+          ? "saved"
+          : option.joins.length + (option.joins.length === 1 ? " join" : " joins");
+        top.append(radio, title, tag);
+        card.appendChild(top);
+
+        if (option.rationale) {
+          const rationale = document.createElement("p");
+          rationale.className = "rationale";
+          rationale.textContent = option.rationale;
+          card.appendChild(rationale);
+        }
+
+        option.joins.forEach((join, joinIndex) => {
+          const row = document.createElement("div");
+          row.className = "join-row";
+          const leftTable = document.createElement("span");
+          leftTable.className = "table-name";
+          leftTable.textContent = join.left_table;
+          const equals = document.createElement("span");
+          equals.className = "equals";
+          equals.textContent = "=";
+          const rightTable = document.createElement("span");
+          rightTable.className = "table-name";
+          rightTable.textContent = join.right_table;
+          row.append(
+            leftTable,
+            columnSelect(join.left_table, join.left_column, (value) => {
+              option.joins[joinIndex].left_column = value;
+              option.joins[joinIndex].left_unique = tableByName(join.left_table).columns.find((column) => column.name === value).unique;
+              option.joins[joinIndex].provenance = "user_edited";
+              updateRiskNotice(card, option);
+              status.textContent = "Column mapping edited. Save to apply it to SQL generation.";
+              updateSaveState();
+            }),
+            equals,
+            columnSelect(join.right_table, join.right_column, (value) => {
+              option.joins[joinIndex].right_column = value;
+              option.joins[joinIndex].right_unique = tableByName(join.right_table).columns.find((column) => column.name === value).unique;
+              option.joins[joinIndex].provenance = "user_edited";
+              updateRiskNotice(card, option);
+              status.textContent = "Column mapping edited. Save to apply it to SQL generation.";
+              updateSaveState();
+            }),
+            rightTable,
+          );
+          card.appendChild(row);
+        });
+
+        if (isRisky(option)) {
+          const risk = document.createElement("p");
+          risk.className = "risk";
+          risk.textContent = "No join side is unique for at least one edge. Results may contain multiplied rows.";
+          card.appendChild(risk);
+        }
+        option.joins.forEach((join) => {
+          const provenance = document.createElement("span");
+          provenance.className = "tag"
+            + (join.provenance.includes("user_edited") ? " manual" : "")
+            + (join.provenance.includes("ai_inferred") ? " ai" : "");
+          provenance.textContent = join.provenance.replaceAll("_", " ");
+          provenance.title = join.left_table + "." + join.left_column + " = " + join.right_table + "." + join.right_column;
+          card.appendChild(provenance);
+        });
+
+        radio.addEventListener("change", () => {
+          selectedIndex = index;
+          status.textContent = "";
+          renderOptions();
+        });
+        card.addEventListener("click", (event) => {
+          if (event.target instanceof HTMLSelectElement || event.target instanceof HTMLInputElement) return;
+          selectedIndex = index;
+          renderOptions();
+        });
+        optionsBox.appendChild(card);
+      });
+      updateSaveState();
+    }
+
+    async function loadSavedMapping() {
+      const [source, target] = selectedTables();
+      if (!source || !target || source === target) return;
+      try {
+        const query = new URLSearchParams({ source_table: source, target_table: target });
+        const response = await fetch("/api/relationships/mapping?" + query);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Could not load saved mapping");
+        if (!data.saved) {
+          status.textContent = "No mapping saved for this table pair yet.";
+          return;
+        }
+        if (data.saved.stale) {
+          status.textContent = "A saved mapping exists, but schema metadata changed. Generate and review a fresh option.";
+          return;
+        }
+        const saved = data.saved.mapping;
+        saved.saved = true;
+        const signature = JSON.stringify(saved.joins.map((join) => [
+          join.left_table, join.left_column, join.right_table, join.right_column,
+        ]));
+        let savedIndex = options.findIndex((option) => JSON.stringify(option.joins.map((join) => [
+          join.left_table, join.left_column, join.right_table, join.right_column,
+        ])) === signature);
+        if (savedIndex < 0) {
+          options.unshift(saved);
+          savedIndex = 0;
+        } else {
+          options[savedIndex].saved = true;
+        }
+        selectedIndex = savedIndex;
+        renderOptions();
+        status.textContent = "A mapping is already saved for this table pair. Saving a new choice will replace it.";
+      } catch (error) {
+        status.textContent = error.message;
+      }
+    }
+
+    async function generateOptions() {
+      const [source, target] = selectedTables();
+      if (!source || !target || source === target) {
+        setNotice("Choose two different tables.", true);
+        return;
+      }
+      generateButton.disabled = true;
+      generateButton.textContent = "Finding…";
+      setNotice("");
+      status.textContent = "";
+      confirmRisk.checked = false;
+      options = [];
+      selectedIndex = -1;
+      renderOptions();
+      try {
+        const response = await fetch("/api/relationships/options", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source_table: source, target_table: target }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Failed to generate options");
+        options = data.options || [];
+        fingerprint = data.fingerprint;
+        if (data.warnings?.length) setNotice(data.warnings.join(" "));
+        if (options.length) selectedIndex = 0;
+        renderOptions();
+        await loadSavedMapping();
+      } catch (error) {
+        setNotice(error.message, true);
+      } finally {
+        generateButton.disabled = false;
+        generateButton.textContent = "Find paths";
+      }
+    }
+
+    async function saveSelected() {
+      const [source, target] = selectedTables();
+      const mapping = options[selectedIndex];
+      if (!mapping) return;
+      saveButton.disabled = true;
+      saveButton.textContent = "Saving…";
+      try {
+        const response = await fetch("/api/relationships/mapping", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_table: source,
+            target_table: target,
+            fingerprint,
+            mapping,
+            confirm_non_unique: confirmRisk.checked,
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Failed to save mapping");
+        status.textContent = "Mapping saved. SQL generation will use these join columns for this table pair.";
+      } catch (error) {
+        status.textContent = error.message;
+      } finally {
+        saveButton.textContent = "Save selected mapping";
+        updateSaveState();
+      }
+    }
+
+    async function initialize() {
+      try {
+        const response = await fetch("/api/relationships/tables");
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Could not read schema metadata");
+        tables = data.tables || [];
+        renderSelect(sourceSelect);
+        renderSelect(targetSelect, tables[1]?.name);
+        generateButton.disabled = tables.length < 2;
+        await loadRelationshipModel();
+        if (data.warnings?.length) setNotice(data.warnings.join(" "));
+        if (!tables.length) setNotice("No business tables were found in the live schema.", true);
+      } catch (error) {
+        renderRelationshipGraph();
+        setNotice(error.message, true);
+      }
+    }
+
+    generateButton.addEventListener("click", generateOptions);
+    refreshModelButton.addEventListener("click", generateFullModel);
+    document.getElementById("edge-save").addEventListener("click", saveEditedEdge);
+    document.getElementById("edge-delete").addEventListener("click", deleteEditedEdge);
+    document.getElementById("edge-cancel").addEventListener("click", () => {
+      selectedEdge = null;
+      edgeEditor.hidden = true;
+      drawGraphEdges();
+    });
+    sourceSelect.addEventListener("change", () => { status.textContent = ""; });
+    targetSelect.addEventListener("change", () => { status.textContent = ""; });
+    confirmRisk.addEventListener("change", updateSaveState);
+    saveButton.addEventListener("click", saveSelected);
+    initialize();
+  </script>
+</body>
+</html>

@@ -205,6 +205,22 @@ SET
 -- Create index for faster queries
 CREATE INDEX IF NOT EXISTS idx_schema_metadata_table ON schema_metadata(table_name);
 
+CREATE TABLE IF NOT EXISTS semantic_relationship_mappings (
+    source_table VARCHAR(255) NOT NULL,
+    target_table VARCHAR(255) NOT NULL,
+    mapping_json TEXT NOT NULL,
+    schema_fingerprint VARCHAR(64) NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_table, target_table)
+);
+
+CREATE TABLE IF NOT EXISTS semantic_relationship_catalog (
+    catalog_id INTEGER PRIMARY KEY,
+    relationships_json TEXT NOT NULL,
+    schema_fingerprint VARCHAR(64) NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Insert metadata for teacher table
 INSERT INTO schema_metadata (
     table_name, column_name, business_name, business_description, data_type, is_primary_key, sample_values
@@ -271,7 +287,7 @@ INSERT INTO schema_metadata (
 ) VALUES
 ('course_enrollment', NULL, 'Course Enrollment Table', 'Stores student course selections with teacher assignments, grades and scores. This is a junction table connecting students to courses. JOIN with student via course_enrollment.student_id = student.id, JOIN with course via course_enrollment.course_id = course.id, JOIN with teacher via course_enrollment.teacher_id = teacher.id to get complete enrollment information.', NULL, FALSE, FALSE, NULL, NULL),
 ('course_enrollment', 'id', 'Enrollment ID', 'Primary key that uniquely identifies each course enrollment record', 'SERIAL', TRUE, FALSE, NULL, '1, 2, 3'),
-('course_enrollment', 'student_id', 'Student ID', 'Foreign key reference to the student taking the course', 'VARCHAR', FALSE, TRUE, 'students.id', '10001, 10002, 10003'),
+('course_enrollment', 'student_id', 'Student ID', 'Foreign key reference to the student taking the course', 'VARCHAR', FALSE, TRUE, 'student.id', '10001, 10002, 10003'),
 ('course_enrollment', 'course_id', 'Course ID', 'Foreign key reference to the course being taken', 'INTEGER', FALSE, TRUE, 'course.id', '1, 2, 3'),
 ('course_enrollment', 'teacher_id', 'Teacher ID', 'Foreign key reference to the teacher teaching this course section', 'INTEGER', FALSE, TRUE, 'teacher.id', '1, 2, 3'),
 ('course_enrollment', 'grade', 'Grade Level', 'Grade level when taking this course (1=Freshman, 2=Sophomore, 3=Junior, 4=Senior), should match class.grade', 'INTEGER', FALSE, FALSE, NULL, '1, 2, 3, 4'),
